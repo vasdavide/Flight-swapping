@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Loader2,
   Image as ImageIcon,
+  Camera,
   Sparkles,
   Trash2,
   User,
@@ -55,6 +56,7 @@ export default function App() {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'calendar' | 'swaps' | 'profile'>('calendar');
+  const [isScanning, setIsScanning] = useState(false);
 
   // Image Editing State
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -97,6 +99,87 @@ export default function App() {
       setSwaps(data);
     } catch (err) {
       console.error("Failed to fetch swaps", err);
+    }
+  };
+
+  const handleScanSchedule = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsScanning(true);
+    try {
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve) => {
+        reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+      });
+      reader.readAsDataURL(file);
+      const base64Data = await base64Promise;
+
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType: file.type
+            }
+          },
+          {
+            text: `This is a picture of a written flight schedule. 
+            Extract all flights where the crew member is on duty.
+            For each flight, identify: flight_code, departure_city, arrival_city, departure_time (HH:mm), arrival_time (HH:mm), and date (YYYY-MM-DD).
+            Return ONLY a JSON array of objects with these keys.`
+          }
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                flight_code: { type: Type.STRING },
+                departure_city: { type: Type.STRING },
+                arrival_city: { type: Type.STRING },
+                departure_time: { type: Type.STRING },
+                arrival_time: { type: Type.STRING },
+                date: { type: Type.STRING },
+              },
+              required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time", "date"]
+            }
+          }
+        }
+      });
+
+      const extractedFlights: Flight[] = JSON.parse(response.text || '[]');
+      
+      if (extractedFlights.length === 0) {
+        alert("No flights detected in the image. Please try a clearer photo.");
+        return;
+      }
+
+      // Save all extracted flights
+      for (const flight of extractedFlights) {
+        await fetch('/api/flights', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...flight,
+            user_email: USER_EMAIL
+          })
+        });
+      }
+
+      await fetchFlights();
+      alert(`Successfully imported ${extractedFlights.length} flights from your schedule!`);
+    } catch (err) {
+      console.error("Failed to scan schedule", err);
+      alert("Failed to process the image. Please ensure it's a clear photo of a flight schedule.");
+    } finally {
+      setIsScanning(false);
+      // Reset input
+      e.target.value = '';
     }
   };
 
@@ -327,12 +410,29 @@ export default function App() {
                     <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-2 hover:bg-gray-100 rounded-lg"><ChevronRight size={20}/></button>
                   </div>
                 </div>
-                <button 
-                  onClick={() => setIsAddingFlight(true)}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition-all shadow-md active:scale-95"
-                >
-                  <Plus size={18} /> Add Flight
-                </button>
+                <div className="flex items-center gap-2">
+                  <button 
+                    disabled={isScanning}
+                    className="relative bg-white hover:bg-gray-50 text-gray-700 border border-black/5 px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition-all shadow-sm active:scale-95 disabled:opacity-50"
+                  >
+                    {isScanning ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />}
+                    {isScanning ? 'Scanning...' : 'Scan Schedule'}
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      capture="environment" 
+                      className="absolute inset-0 opacity-0 cursor-pointer" 
+                      onChange={handleScanSchedule}
+                      disabled={isScanning}
+                    />
+                  </button>
+                  <button 
+                    onClick={() => setIsAddingFlight(true)}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition-all shadow-md active:scale-95"
+                  >
+                    <Plus size={18} /> Add Flight
+                  </button>
+                </div>
               </div>
 
               {/* Calendar Grid */}
