@@ -730,8 +730,12 @@ export default function App() {
                     return (
                       <div 
                         key={i} 
+                        onClick={() => {
+                          setSelectedDate(day);
+                          setIsAddingFlight(true);
+                        }}
                         className={cn(
-                          "min-h-[140px] p-2 border-r border-b border-black/5 last:border-r-0 relative group",
+                          "min-h-[140px] p-2 border-r border-b border-black/5 last:border-r-0 relative group cursor-pointer hover:bg-gray-50/80 transition-colors",
                           !isCurrentMonth && "bg-gray-50/50"
                         )}
                       >
@@ -749,6 +753,7 @@ export default function App() {
                             return (
                             <div 
                               key={f.id} 
+                              onClick={(e) => e.stopPropagation()}
                               className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-1.5 rounded-lg text-[10px] flex flex-col gap-0.5 group/flight relative"
                             >
                               <div className="flex items-center justify-between">
