@@ -1,0 +1,5 @@
+{
+  "name": "Flight swapping search",
+  "description": "A schedule management and flight exchange app for flight attendants, powered by Gemini.",
+  "requestFramePermissions": []
+}
