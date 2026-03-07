@@ -67,6 +67,9 @@ async function startServer() {
 
   app.delete("/api/flights/:id", (req, res) => {
     const { id } = req.params;
+    db.prepare("DELETE FROM swap_proposals WHERE listing_id IN (SELECT id FROM swap_requests WHERE flight_id = ?)").run(id);
+    db.prepare("DELETE FROM swap_proposals WHERE proposer_flight_id = ?").run(id);
+    db.prepare("DELETE FROM swap_requests WHERE flight_id = ?").run(id);
     db.prepare("DELETE FROM flights WHERE id = ?").run(id);
     res.json({ success: true });
   });
@@ -89,6 +92,13 @@ async function startServer() {
 
     const info = db.prepare("INSERT INTO swap_requests (requester_email, flight_id) VALUES (?, ?)").run(requester_email, flight_id);
     res.json({ id: info.lastInsertRowid });
+  });
+
+  app.delete("/api/swaps/:id", (req, res) => {
+    const { id } = req.params;
+    db.prepare("DELETE FROM swap_proposals WHERE listing_id = ?").run(id);
+    db.prepare("DELETE FROM swap_requests WHERE id = ?").run(id);
+    res.json({ success: true });
   });
 
   // Proposals
@@ -129,6 +139,26 @@ async function startServer() {
       WHERE sp.proposer_email = ?
     `).all(email);
     res.json(proposals);
+  });
+
+  app.get("/api/candidates", (req, res) => {
+    const date = req.query.date as string;
+    const email = req.query.email as string;
+    
+    if (!date || !email) {
+      return res.status(400).json({ error: "Missing date or email" });
+    }
+
+    const candidates = db.prepare(`
+      SELECT DISTINCT user_email 
+      FROM flights 
+      WHERE user_email != ? 
+      AND user_email NOT IN (
+        SELECT user_email FROM flights WHERE date = ?
+      )
+    `).all(email, date);
+    
+    res.json(candidates.map((c: any) => c.user_email));
   });
 
   app.patch("/api/proposals/:id", (req, res) => {

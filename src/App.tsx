@@ -13,7 +13,10 @@ import {
   Sparkles,
   Trash2,
   User,
-  LogOut
+  LogOut,
+  Save,
+  FolderOpen,
+  Search
 } from 'lucide-react';
 import { 
   format, 
@@ -39,9 +42,8 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const USER_EMAIL = "vasdavide@gmail.com"; // From context
-
 export default function App() {
+  const [loginId, setLoginId] = useState<string>(() => localStorage.getItem('skycrew_login_id') || '');
   const [currentDate, setCurrentDate] = useState(new Date());
   const [flights, setFlights] = useState<Flight[]>([]);
   const [swaps, setSwaps] = useState<SwapRequest[]>([]);
@@ -57,23 +59,25 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'calendar' | 'swaps' | 'profile'>('calendar');
   const [isScanning, setIsScanning] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Modals state
+  const [flightToDelete, setFlightToDelete] = useState<number | null>(null);
+  const [isClearingAll, setIsClearingAll] = useState(false);
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
+  const [candidatesModal, setCandidatesModal] = useState<{isOpen: boolean, date: string, flightCode: string, candidates: string[]}>({isOpen: false, date: '', flightCode: '', candidates: []});
 
   // Image Editing State
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [isEditingImage, setIsEditingImage] = useState(false);
 
-  useEffect(() => {
-    fetchFlights();
-    fetchSwaps();
-    fetchProposals();
-  }, []);
-
   const fetchProposals = async () => {
+    if (!loginId) return;
     try {
       const [incoming, outgoing] = await Promise.all([
-        fetch(`/api/proposals/incoming?email=${USER_EMAIL}`).then(r => r.json()),
-        fetch(`/api/proposals/outgoing?email=${USER_EMAIL}`).then(r => r.json())
+        fetch(`/api/proposals/incoming?email=${loginId}`).then(r => r.json()),
+        fetch(`/api/proposals/outgoing?email=${loginId}`).then(r => r.json())
       ]);
       setIncomingProposals(incoming);
       setOutgoingProposals(outgoing);
@@ -83,22 +87,43 @@ export default function App() {
   };
 
   const fetchFlights = async () => {
+    if (!loginId) return;
     try {
-      const res = await fetch(`/api/flights?email=${USER_EMAIL}`);
-      const data = await res.json();
-      setFlights(data);
+      const res = await fetch(`/api/flights?email=${loginId}`);
+      const serverFlights = await res.json();
+      setFlights(serverFlights);
     } catch (err) {
       console.error("Failed to fetch flights", err);
     }
   };
 
   const fetchSwaps = async () => {
+    if (!loginId) return;
     try {
       const res = await fetch('/api/swaps');
       const data = await res.json();
       setSwaps(data);
     } catch (err) {
       console.error("Failed to fetch swaps", err);
+    }
+  };
+
+  useEffect(() => {
+    if (loginId) {
+      fetchFlights();
+      fetchSwaps();
+      fetchProposals();
+    }
+  }, [loginId]);
+
+  const handleFindCandidates = async (date: string, flightCode: string) => {
+    if (!loginId) return;
+    try {
+      const res = await fetch(`/api/candidates?date=${date}&email=${loginId}`);
+      const candidates = await res.json();
+      setCandidatesModal({ isOpen: true, date, flightCode, candidates });
+    } catch (err) {
+      console.error("Failed to fetch candidates", err);
     }
   };
 
@@ -155,27 +180,39 @@ export default function App() {
       const extractedFlights: Flight[] = JSON.parse(response.text || '[]');
       
       if (extractedFlights.length === 0) {
-        alert("No flights detected in the image. Please try a clearer photo.");
+        setAlertMessage("No flights detected in the image. Please try a clearer photo.");
         return;
       }
 
+      let addedCount = 0;
+      let duplicateCount = 0;
+      const currentFlights = [...flights];
+
       // Save all extracted flights
       for (const flight of extractedFlights) {
-        await fetch('/api/flights', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...flight,
-            user_email: USER_EMAIL
-          })
-        });
+        const isDuplicate = currentFlights.some(f => f.date === flight.date && f.flight_code.toUpperCase() === flight.flight_code.toUpperCase());
+        
+        if (!isDuplicate) {
+          await fetch('/api/flights', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...flight,
+              user_email: loginId
+            })
+          });
+          currentFlights.push(flight);
+          addedCount++;
+        } else {
+          duplicateCount++;
+        }
       }
 
       await fetchFlights();
-      alert(`Successfully imported ${extractedFlights.length} flights from your schedule!`);
+      setAlertMessage(`Successfully imported ${addedCount} flights. ${duplicateCount > 0 ? `Skipped ${duplicateCount} duplicates.` : ''}`);
     } catch (err) {
       console.error("Failed to scan schedule", err);
-      alert("Failed to process the image. Please ensure it's a clear photo of a flight schedule.");
+      setAlertMessage("Failed to process the image. Please ensure it's a clear photo of a flight schedule.");
     } finally {
       setIsScanning(false);
       // Reset input
@@ -185,6 +222,15 @@ export default function App() {
 
   const handleAddFlight = async () => {
     if (!flightCode || !selectedDate) return;
+    
+    const dateString = format(selectedDate, 'yyyy-MM-dd');
+    const isDuplicate = flights.some(f => f.date === dateString && f.flight_code.toUpperCase() === flightCode.toUpperCase());
+    
+    if (isDuplicate) {
+      setAlertMessage(`Flight ${flightCode.toUpperCase()} already exists on ${dateString}.`);
+      return;
+    }
+
     setIsLoading(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -210,7 +256,7 @@ export default function App() {
 
       const details = JSON.parse(response.text || '{}');
       const newFlight: Flight = {
-        user_email: USER_EMAIL,
+        user_email: loginId,
         flight_code: flightCode.toUpperCase(),
         date: format(selectedDate, 'yyyy-MM-dd'),
         ...details
@@ -228,17 +274,55 @@ export default function App() {
       setSelectedDate(null);
     } catch (err) {
       console.error("Failed to add flight", err);
-      alert("Could not parse flight code. Please try a standard format like AA123.");
+      setAlertMessage("Could not parse flight code. Please try a standard format like AA123.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleClearData = async () => {
+    if (flights.length === 0) {
+      setAlertMessage("No data to clear.");
+      return;
+    }
+    setIsClearingAll(true);
+  };
+
+  const executeClearData = async () => {
+    setIsClearingAll(false);
+    setIsLoading(true);
+    try {
+      // Delete all flights from the server
+      for (const f of flights) {
+        if (f.id) {
+          await fetch(`/api/flights/${f.id}`, { method: 'DELETE' });
+        }
+      }
+      setFlights([]);
+      localStorage.removeItem('skycrew_flights');
+      setFileHandle(null);
+      await clearHandle();
+      setAlertMessage("All data cleared successfully.");
+    } catch (err) {
+      console.error("Failed to clear data", err);
+      setAlertMessage("Failed to clear some data.");
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleDeleteFlight = async (id: number) => {
-    if (!confirm("Are you sure you want to remove this flight?")) return;
+    setFlightToDelete(id);
+  };
+
+  const executeDeleteFlight = async () => {
+    if (flightToDelete === null) return;
+    const id = flightToDelete;
+    setFlightToDelete(null);
     try {
       await fetch(`/api/flights/${id}`, { method: 'DELETE' });
-      await fetchFlights();
+      const updatedFlights = flights.filter(f => f.id !== id);
+      setFlights(updatedFlights);
     } catch (err) {
       console.error("Failed to delete flight", err);
     }
@@ -249,7 +333,7 @@ export default function App() {
       const res = await fetch('/api/swaps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requester_email: USER_EMAIL, flight_id: flightId })
+        body: JSON.stringify({ requester_email: loginId, flight_id: flightId })
       });
       if (!res.ok) {
         const data = await res.json();
@@ -263,6 +347,18 @@ export default function App() {
     }
   };
 
+  const handleCancelSwap = async (swapId: number) => {
+    try {
+      const res = await fetch(`/api/swaps/${swapId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error("Failed to cancel swap");
+      alert("Swap request cancelled.");
+      fetchSwaps();
+    } catch (err: any) {
+      console.error("Failed to cancel swap", err);
+      alert(err.message);
+    }
+  };
+
   const handleProposeSwap = async () => {
     if (!selectedListing || !offeredFlightId) return;
     try {
@@ -271,7 +367,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           listing_id: selectedListing.id,
-          proposer_email: USER_EMAIL,
+          proposer_email: loginId,
           proposer_flight_id: offeredFlightId
         })
       });
@@ -292,7 +388,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
       });
-      alert(`Proposal ${status}!`);
+      setAlertMessage(`Proposal ${status}!`);
       fetchProposals();
       fetchFlights();
       fetchSwaps();
@@ -337,7 +433,7 @@ export default function App() {
       setEditPrompt('');
     } catch (err) {
       console.error("Failed to edit image", err);
-      alert("Image editing failed. Please try a different prompt.");
+      setAlertMessage("Image editing failed. Please try a different prompt.");
     } finally {
       setIsEditingImage(false);
     }
@@ -359,8 +455,177 @@ export default function App() {
     return map;
   }, [flights]);
 
+  if (!loginId) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F5] flex items-center justify-center p-4 font-sans text-[#1A1A1A]">
+        <div className="bg-white p-8 rounded-3xl shadow-sm border border-black/5 max-w-md w-full text-center">
+          <div className="w-16 h-16 bg-emerald-600 rounded-2xl flex items-center justify-center text-white mx-auto mb-6">
+            <Plane size={32} />
+          </div>
+          <h1 className="text-2xl font-bold mb-2">Welcome to SkyCrew</h1>
+          <p className="text-gray-500 mb-8">Enter your Login ID to access your schedule and swap board.</p>
+          
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.currentTarget);
+            const id = formData.get('loginId') as string;
+            if (id.trim()) {
+              const email = id.trim();
+              
+              // Load from local drive (localStorage) when logging in
+              const localDriveData = localStorage.getItem(`skycrew_local_drive_${email}`);
+              if (localDriveData) {
+                try {
+                  const importedFlights = JSON.parse(localDriveData);
+                  // Check if server is empty before restoring to avoid duplicates
+                  const res = await fetch(`/api/flights?email=${email}`);
+                  const serverFlights = await res.json();
+                  
+                  if (serverFlights.length === 0 && importedFlights.length > 0) {
+                    for (const f of importedFlights) {
+                      const { id, ...flightData } = f;
+                      await fetch('/api/flights', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ...flightData, user_email: email })
+                      });
+                    }
+                  }
+                } catch (err) {
+                  console.error("Failed to load from local drive", err);
+                }
+              }
+
+              setLoginId(email);
+              localStorage.setItem('skycrew_login_id', email);
+            }
+          }}>
+            <input 
+              type="text" 
+              name="loginId"
+              placeholder="e.g. vasdavide@gmail.com" 
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 mb-4"
+              required
+            />
+            <button 
+              type="submit"
+              className="w-full py-3 bg-emerald-600 text-white font-semibold rounded-xl hover:bg-emerald-700 transition-colors"
+            >
+              Log In
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#F5F5F5] text-[#1A1A1A] font-sans">
+      {/* Modals */}
+      <AnimatePresence>
+        {candidatesModal.isOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl"
+            >
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold">Available Candidates</h3>
+                <button 
+                  onClick={() => setCandidatesModal({ ...candidatesModal, isOpen: false })}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+              
+              <p className="text-sm text-gray-600 mb-4">
+                These crew members do not have a flight scheduled on <strong>{format(parseISO(candidatesModal.date), 'MMM d, yyyy')}</strong>. You can contact them to swap your flight <strong>{candidatesModal.flightCode}</strong>.
+              </p>
+
+              <div className="max-h-60 overflow-y-auto space-y-2">
+                {candidatesModal.candidates.length === 0 ? (
+                  <div className="text-center py-8 text-gray-500 text-sm">
+                    No available candidates found for this date.
+                  </div>
+                ) : (
+                  candidatesModal.candidates.map(email => (
+                    <div key={email} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
+                      <span className="text-sm font-medium">{email}</span>
+                      <a 
+                        href={`mailto:${email}?subject=Flight Swap Request: ${candidatesModal.flightCode} on ${format(parseISO(candidatesModal.date), 'MMM d')}&body=Hi,%0D%0A%0D%0AI saw you are off on ${format(parseISO(candidatesModal.date), 'MMM d')}. Would you be interested in taking my flight ${candidatesModal.flightCode}?%0D%0A%0D%0AThanks!`}
+                        className="text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                      >
+                        Email
+                      </a>
+                    </div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {alertMessage && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }}
+              className="bg-white p-6 rounded-2xl max-w-sm w-full shadow-xl"
+            >
+              <h3 className="text-lg font-semibold mb-2">Notice</h3>
+              <p className="text-gray-600 mb-6">{alertMessage}</p>
+              <div className="flex justify-end">
+                <button onClick={() => setAlertMessage(null)} className="px-4 py-2 bg-emerald-600 text-white hover:bg-emerald-700 rounded-xl font-medium">OK</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {isClearingAll && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }}
+              className="bg-white p-6 rounded-2xl max-w-sm w-full shadow-xl"
+            >
+              <h3 className="text-lg font-semibold mb-2 text-red-600">Clear all data?</h3>
+              <p className="text-gray-600 mb-6">Are you sure you want to clear all your flights? This action cannot be undone.</p>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setIsClearingAll(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-xl font-medium">Cancel</button>
+                <button onClick={executeClearData} className="px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-xl font-medium">Clear Data</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+
+        {flightToDelete !== null && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }}
+              className="bg-white p-6 rounded-2xl max-w-sm w-full shadow-xl"
+            >
+              <h3 className="text-lg font-semibold mb-2 text-red-600">Remove Flight?</h3>
+              <p className="text-gray-600 mb-6">Are you sure you want to remove this flight from your schedule?</p>
+              <div className="flex justify-end gap-3">
+                <button onClick={() => setFlightToDelete(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-xl font-medium">Cancel</button>
+                <button onClick={executeDeleteFlight} className="px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-xl font-medium">Remove</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <header className="bg-white border-b border-black/5 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
         <div className="flex items-center gap-2">
@@ -412,25 +677,37 @@ export default function App() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button 
-                    disabled={isScanning}
-                    className="relative bg-white hover:bg-gray-50 text-gray-700 border border-black/5 px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition-all shadow-sm active:scale-95 disabled:opacity-50"
+                    onClick={handleClearData}
+                    disabled={isLoading || isScanning}
+                    className="bg-white hover:bg-red-50 text-red-600 border border-red-100 w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-95 disabled:opacity-50"
+                    title="Clear all data"
+                  >
+                    {isLoading && flights.length > 0 ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
+                  </button>
+                  <label 
+                    className={cn(
+                      "relative bg-white hover:bg-gray-50 text-gray-700 border border-black/5 w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-95 cursor-pointer",
+                      (isScanning || isLoading) && "opacity-50 cursor-not-allowed pointer-events-none"
+                    )}
+                    title="Scan Schedule"
                   >
                     {isScanning ? <Loader2 size={18} className="animate-spin" /> : <Camera size={18} />}
-                    {isScanning ? 'Scanning...' : 'Scan Schedule'}
                     <input 
                       type="file" 
                       accept="image/*" 
                       capture="environment" 
-                      className="absolute inset-0 opacity-0 cursor-pointer" 
+                      className="hidden" 
                       onChange={handleScanSchedule}
-                      disabled={isScanning}
+                      disabled={isScanning || isLoading}
                     />
-                  </button>
+                  </label>
                   <button 
                     onClick={() => setIsAddingFlight(true)}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium transition-all shadow-md active:scale-95"
+                    disabled={isLoading || isScanning}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-md active:scale-95 disabled:opacity-50"
+                    title="Add Flight"
                   >
-                    <Plus size={18} /> Add Flight
+                    <Plus size={18} />
                   </button>
                 </div>
               </div>
@@ -467,7 +744,9 @@ export default function App() {
                         </span>
                         
                         <div className="mt-2 space-y-1">
-                          {dayFlights.map(f => (
+                          {dayFlights.map(f => {
+                            const isListed = swaps.some(s => s.flight_id === f.id);
+                            return (
                             <div 
                               key={f.id} 
                               className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-1.5 rounded-lg text-[10px] flex flex-col gap-0.5 group/flight relative"
@@ -476,7 +755,8 @@ export default function App() {
                                 <span className="font-bold">{f.flight_code}</span>
                                 <button 
                                   onClick={() => handleDeleteFlight(f.id!)}
-                                  className="opacity-0 group-hover/flight:opacity-100 hover:text-red-600 transition-opacity"
+                                  className="text-gray-400 hover:text-red-600 transition-colors"
+                                  title="Remove flight"
                                 >
                                   <X size={10} />
                                 </button>
@@ -488,14 +768,30 @@ export default function App() {
                               </div>
                               <div className="font-medium">{f.departure_time} - {f.arrival_time}</div>
                               
-                              <button 
-                                onClick={() => handlePostSwap(f.id!)}
-                                className="mt-1 text-[9px] bg-white/50 hover:bg-white text-emerald-700 py-0.5 px-1 rounded border border-emerald-200 flex items-center justify-center gap-1 opacity-0 group-hover/flight:opacity-100 transition-opacity"
-                              >
-                                <ArrowRightLeft size={8} /> Post Swap
-                              </button>
+                              <div className="flex items-center gap-1 mt-1">
+                                <button 
+                                  onClick={() => !isListed && handlePostSwap(f.id!)}
+                                  disabled={isListed}
+                                  className={cn(
+                                    "flex-1 text-[9px] py-0.5 px-1 rounded border flex items-center justify-center gap-1 transition-colors",
+                                    isListed 
+                                      ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed" 
+                                      : "bg-white/50 hover:bg-white text-emerald-700 border-emerald-200"
+                                  )}
+                                  title={isListed ? "Already posted" : "Post to Swap Board"}
+                                >
+                                  <ArrowRightLeft size={8} /> {isListed ? "Listed" : "Post"}
+                                </button>
+                                <button 
+                                  onClick={() => handleFindCandidates(f.date, f.flight_code)}
+                                  className="flex-1 text-[9px] bg-white/50 hover:bg-white text-blue-700 py-0.5 px-1 rounded border border-blue-200 flex items-center justify-center gap-1 transition-colors"
+                                  title="Find Replacements"
+                                >
+                                  <Search size={8} /> Find
+                                </button>
+                              </div>
                             </div>
-                          ))}
+                          )})}
                         </div>
                       </div>
                     );
@@ -621,7 +917,7 @@ export default function App() {
                               <User size={16} className="text-gray-500" />
                             </div>
                             <div className="text-xs font-medium text-gray-500 truncate max-w-[120px]">
-                              {swap.requester_email === USER_EMAIL ? "You" : swap.requester_email}
+                              {swap.requester_email === loginId ? "You" : swap.requester_email}
                             </div>
                           </div>
                           <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full uppercase tracking-wider">
@@ -653,19 +949,22 @@ export default function App() {
                         </div>
 
                         <button 
-                          disabled={swap.requester_email === USER_EMAIL}
                           onClick={() => {
-                            setSelectedListing(swap);
-                            setIsProposingSwap(true);
+                            if (swap.requester_email === loginId) {
+                              handleCancelSwap(swap.id!);
+                            } else {
+                              setSelectedListing(swap);
+                              setIsProposingSwap(true);
+                            }
                           }}
                           className={cn(
                             "w-full mt-6 py-2.5 rounded-xl text-sm font-semibold transition-all",
-                            swap.requester_email === USER_EMAIL 
-                              ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                            swap.requester_email === loginId 
+                              ? "bg-red-50 text-red-600 hover:bg-red-100 border border-red-200"
                               : "bg-black text-white hover:bg-gray-800 active:scale-[0.98]"
                           )}
                         >
-                          {swap.requester_email === USER_EMAIL ? "Your Request" : "Propose Swap"}
+                          {swap.requester_email === loginId ? "Cancel Request" : "Propose Swap"}
                         </button>
                       </div>
                     ))
@@ -700,8 +999,8 @@ export default function App() {
                   </label>
                 </div>
                 
-                <h2 className="text-2xl font-bold mb-1">{USER_EMAIL.split('@')[0]}</h2>
-                <p className="text-gray-400 text-sm mb-6">{USER_EMAIL}</p>
+                <h2 className="text-2xl font-bold mb-1">{loginId.split('@')[0]}</h2>
+                <p className="text-gray-400 text-sm mb-6">{loginId}</p>
                 
                 <div className="grid grid-cols-3 gap-4 border-t border-black/5 pt-6">
                   <div>
@@ -709,7 +1008,7 @@ export default function App() {
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest">Flights</div>
                   </div>
                   <div>
-                    <div className="text-xl font-bold">{swaps.filter(s => s.requester_email === USER_EMAIL).length}</div>
+                    <div className="text-xl font-bold">{swaps.filter(s => s.requester_email === loginId).length}</div>
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest">Swaps</div>
                   </div>
                   <div>
@@ -757,7 +1056,22 @@ export default function App() {
                 </div>
               </div>
 
-              <button className="w-full flex items-center justify-center gap-2 text-red-500 font-medium py-4 hover:bg-red-50 rounded-2xl transition-colors">
+              <button 
+                onClick={() => {
+                  // Save to local drive (localStorage) when signing out
+                  if (flights.length > 0) {
+                    localStorage.setItem(`skycrew_local_drive_${loginId}`, JSON.stringify(flights));
+                  }
+                  
+                  localStorage.removeItem('skycrew_login_id');
+                  setLoginId('');
+                  setFlights([]);
+                  setSwaps([]);
+                  setIncomingProposals([]);
+                  setOutgoingProposals([]);
+                }}
+                className="w-full flex items-center justify-center gap-2 text-red-500 font-medium py-4 hover:bg-red-50 rounded-2xl transition-colors"
+              >
                 <LogOut size={20} />
                 Sign Out
               </button>
