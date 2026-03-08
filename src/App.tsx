@@ -288,6 +288,82 @@ export default function App() {
     setIsClearingAll(true);
   };
 
+  const handleLoadFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setIsLoading(true);
+    try {
+      const text = await file.text();
+      const importedFlights = JSON.parse(text);
+      if (!Array.isArray(importedFlights)) throw new Error("Invalid format");
+
+      let addedCount = 0;
+      let duplicateCount = 0;
+      const currentFlights = [...flights];
+
+      // Process in batches to avoid overwhelming the server
+      const batchSize = 5;
+      for (let i = 0; i < importedFlights.length; i += batchSize) {
+        const batch = importedFlights.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (f) => {
+          const isDuplicate = currentFlights.some(existing => 
+            existing.date === f.date && 
+            existing.flight_code.toUpperCase() === f.flight_code.toUpperCase()
+          );
+          
+          if (!isDuplicate) {
+            const { id, user_email, ...flightData } = f;
+            // Force the user_email to be the current loginId
+            await fetch('/api/flights', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ...flightData, user_email: loginId })
+            });
+            currentFlights.push({ ...f, user_email: loginId });
+            addedCount++;
+          } else {
+            duplicateCount++;
+          }
+        }));
+      }
+      
+      await fetchFlights();
+      setAlertMessage(`Schedule loaded successfully! Added ${addedCount} flights to your account (${loginId}). ${duplicateCount > 0 ? `Skipped ${duplicateCount} duplicates.` : ''}`);
+    } catch (err) {
+      console.error("Failed to load file", err);
+      setAlertMessage("Failed to load schedule. Please ensure it's a valid JSON file.");
+    } finally {
+      setIsLoading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleExportFile = () => {
+    if (flights.length === 0) {
+      setAlertMessage("No data to export.");
+      return;
+    }
+    
+    // Ensure we only export flights belonging to the current user
+    const userFlights = flights.filter(f => f.user_email === loginId);
+    
+    if (userFlights.length === 0) {
+      setAlertMessage("No flights found for your account to export.");
+      return;
+    }
+
+    const dataStr = JSON.stringify(userFlights, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    
+    const exportFileDefaultName = `skycrew_schedule_${loginId}_${format(new Date(), 'yyyyMMdd')}.json`;
+    
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+  };
+
   const executeClearData = async () => {
     setIsClearingAll(false);
     setIsLoading(true);
@@ -300,8 +376,6 @@ export default function App() {
       }
       setFlights([]);
       localStorage.removeItem('skycrew_flights');
-      setFileHandle(null);
-      await clearHandle();
       setAlertMessage("All data cleared successfully.");
     } catch (err) {
       console.error("Failed to clear data", err);
@@ -676,6 +750,30 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  <button 
+                    onClick={handleExportFile}
+                    disabled={isLoading || isScanning || flights.length === 0}
+                    className="bg-white hover:bg-gray-50 text-gray-700 border border-black/5 w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-95 disabled:opacity-50"
+                    title="Export schedule to file"
+                  >
+                    <Save size={18} />
+                  </button>
+                  <label 
+                    className={cn(
+                      "relative bg-white hover:bg-gray-50 text-gray-700 border border-black/5 w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-95 cursor-pointer",
+                      (isScanning || isLoading) && "opacity-50 cursor-not-allowed pointer-events-none"
+                    )}
+                    title="Load schedule from file"
+                  >
+                    <FolderOpen size={18} />
+                    <input 
+                      type="file" 
+                      accept=".json,application/json" 
+                      className="hidden" 
+                      onChange={handleLoadFile}
+                      disabled={isScanning || isLoading}
+                    />
+                  </label>
                   <button 
                     onClick={handleClearData}
                     disabled={isLoading || isScanning}
