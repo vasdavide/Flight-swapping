@@ -3,11 +3,15 @@ import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
+import { GoogleGenAI, Type } from "@google/genai";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const db = new Database("skycrew.db");
+
+// Initialize Gemini
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // Initialize database
 db.exec(`
@@ -159,6 +163,98 @@ async function startServer() {
     `).all(email, date);
     
     res.json(candidates.map((c: any) => c.user_email));
+  });
+
+  // AI Routes
+  app.post("/api/ai/parse-flight", async (req, res) => {
+    const { flightCode, date } = req.body;
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Parse this flight code "${flightCode}" for the date ${date}. 
+        If it's a real-looking code (like AA123, BA456), generate plausible flight details (departure city, arrival city, departure time, arrival time).
+        Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              departure_city: { type: Type.STRING },
+              arrival_city: { type: Type.STRING },
+              departure_time: { type: Type.STRING, description: "HH:mm" },
+              arrival_time: { type: Type.STRING, description: "HH:mm" },
+            },
+            required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
+          }
+        }
+      });
+      res.json(JSON.parse(response.text || '{}'));
+    } catch (err) {
+      console.error("AI Parse Error:", err);
+      res.status(500).json({ error: "Failed to parse flight code" });
+    }
+  });
+
+  app.post("/api/ai/scan-schedule", async (req, res) => {
+    const { base64Data, mimeType } = req.body;
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          { inlineData: { data: base64Data, mimeType } },
+          { text: "Extract all flights from this schedule. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time (HH:mm), arrival_time (HH:mm), date (YYYY-MM-DD)." }
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                flight_code: { type: Type.STRING },
+                departure_city: { type: Type.STRING },
+                arrival_city: { type: Type.STRING },
+                departure_time: { type: Type.STRING },
+                arrival_time: { type: Type.STRING },
+                date: { type: Type.STRING },
+              },
+              required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time", "date"]
+            }
+          }
+        }
+      });
+      res.json(JSON.parse(response.text || '[]'));
+    } catch (err) {
+      console.error("AI Scan Error:", err);
+      res.status(500).json({ error: "Failed to scan schedule" });
+    }
+  });
+
+  app.post("/api/ai/edit-image", async (req, res) => {
+    const { base64Data, prompt } = req.body;
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            { inlineData: { data: base64Data, mimeType: 'image/png' } },
+            { text: prompt }
+          ]
+        }
+      });
+      
+      let resultImage = null;
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          resultImage = part.inlineData.data;
+          break;
+        }
+      }
+      res.json({ base64Data: resultImage });
+    } catch (err) {
+      console.error("AI Edit Error:", err);
+      res.status(500).json({ error: "Failed to edit image" });
+    }
   });
 
   app.patch("/api/proposals/:id", (req, res) => {

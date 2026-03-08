@@ -33,7 +33,6 @@ import {
   parseISO
 } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, Type } from "@google/genai";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Flight, SwapRequest, SwapProposal } from './types';
@@ -140,44 +139,14 @@ export default function App() {
       reader.readAsDataURL(file);
       const base64Data = await base64Promise;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          {
-            inlineData: {
-              data: base64Data,
-              mimeType: file.type
-            }
-          },
-          {
-            text: `This is a picture of a written flight schedule. 
-            Extract all flights where the crew member is on duty.
-            For each flight, identify: flight_code, departure_city, arrival_city, departure_time (HH:mm), arrival_time (HH:mm), and date (YYYY-MM-DD).
-            Return ONLY a JSON array of objects with these keys.`
-          }
-        ],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                flight_code: { type: Type.STRING },
-                departure_city: { type: Type.STRING },
-                arrival_city: { type: Type.STRING },
-                departure_time: { type: Type.STRING },
-                arrival_time: { type: Type.STRING },
-                date: { type: Type.STRING },
-              },
-              required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time", "date"]
-            }
-          }
-        }
+      const res = await fetch('/api/ai/scan-schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64Data, mimeType: file.type })
       });
-
-      const extractedFlights: Flight[] = JSON.parse(response.text || '[]');
+      
+      if (!res.ok) throw new Error("Server error");
+      const extractedFlights: Flight[] = await res.json();
       
       if (extractedFlights.length === 0) {
         setAlertMessage("No flights detected in the image. Please try a clearer photo.");
@@ -233,28 +202,20 @@ export default function App() {
 
     setIsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Parse this flight code "${flightCode}" for the date ${format(selectedDate, 'yyyy-MM-dd')}. 
-        If it's a real-looking code (like AA123, BA456), generate plausible flight details (departure city, arrival city, departure time, arrival time).
-        Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              departure_city: { type: Type.STRING },
-              arrival_city: { type: Type.STRING },
-              departure_time: { type: Type.STRING, description: "HH:mm" },
-              arrival_time: { type: Type.STRING, description: "HH:mm" },
-            },
-            required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
-          }
-        }
+      const res = await fetch('/api/ai/parse-flight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flightCode, date: dateString })
       });
 
-      const details = JSON.parse(response.text || '{}');
+      if (!res.ok) throw new Error("Server error");
+      const details = await res.json();
+
+      // If AI returns empty or invalid details, trigger the fallback in catch block
+      if (!details || (!details.departure_city && !details.arrival_city)) {
+        throw new Error("AI could not parse flight details");
+      }
+
       const newFlight: Flight = {
         user_email: loginId,
         flight_code: flightCode.toUpperCase(),
@@ -274,7 +235,33 @@ export default function App() {
       setSelectedDate(null);
     } catch (err) {
       console.error("Failed to add flight", err);
-      setAlertMessage("Could not parse flight code. Please try a standard format like AA123.");
+      // Fallback: Add flight with blank details if AI parsing fails
+      try {
+        const fallbackFlight: Flight = {
+          user_email: loginId,
+          flight_code: flightCode.toUpperCase(),
+          date: dateString,
+          departure_city: '',
+          arrival_city: '',
+          departure_time: '',
+          arrival_time: ''
+        };
+
+        await fetch('/api/flights', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fallbackFlight)
+        });
+
+        await fetchFlights();
+        setIsAddingFlight(false);
+        setFlightCode('');
+        setSelectedDate(null);
+        setAlertMessage("Flight added with blank details (could not parse automatically).");
+      } catch (fallbackErr) {
+        console.error("Fallback add failed", fallbackErr);
+        setAlertMessage("Failed to add flight. Please check your connection.");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -486,23 +473,18 @@ export default function App() {
     if (!selectedImage || !editPrompt) return;
     setIsEditingImage(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const base64Data = selectedImage.split(',')[1];
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [
-            { inlineData: { data: base64Data, mimeType: 'image/png' } },
-            { text: editPrompt }
-          ]
-        }
+      const res = await fetch('/api/ai/edit-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64Data, prompt: editPrompt })
       });
 
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          setSelectedImage(`data:image/png;base64,${part.inlineData.data}`);
-          break;
-        }
+      if (!res.ok) throw new Error("Server error");
+      const { base64Data: resultImage } = await res.json();
+
+      if (resultImage) {
+        setSelectedImage(`data:image/png;base64,${resultImage}`);
       }
       setEditPrompt('');
     } catch (err) {
