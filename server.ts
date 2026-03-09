@@ -166,6 +166,149 @@ async function startServer() {
     res.json(candidates.map((c: any) => c.user_email));
   });
 
+  app.post("/api/parse-flight", async (req, res) => {
+    const { flightCode, dateString } = req.body;
+    
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "GEMINI_API_KEY_MISSING" });
+    }
+
+    try {
+      let response;
+      try {
+        // Attempt 1: With Google Search
+        response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: `Use Google Search to find the current route and schedule for flight code "${flightCode}" on ${dateString}. 
+          I need the departure city, arrival city, departure time (local), and arrival time (local).
+          Search for the actual route (e.g. if CI104, search "CI104 flight route").
+          Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
+          config: {
+            tools: [{ googleSearch: {} }],
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                departure_city: { type: Type.STRING },
+                arrival_city: { type: Type.STRING },
+                departure_time: { type: Type.STRING, description: "HH:mm" },
+                arrival_time: { type: Type.STRING, description: "HH:mm" },
+              },
+              required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
+            }
+          }
+        });
+      } catch (searchErr) {
+        console.warn("Server search grounding failed, retrying without tools...", searchErr);
+        // Attempt 2: Fallback
+        response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: `Parse this flight code "${flightCode}" for the date ${dateString}. 
+          Provide the likely flight details (departure city, arrival city, departure time, arrival time).
+          Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                departure_city: { type: Type.STRING },
+                arrival_city: { type: Type.STRING },
+                departure_time: { type: Type.STRING, description: "HH:mm" },
+                arrival_time: { type: Type.STRING, description: "HH:mm" },
+              },
+              required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
+            }
+          }
+        });
+      }
+
+      const details = JSON.parse(response.text || '{}');
+      res.json(details);
+    } catch (err) {
+      console.error("Server flight parsing failed", err);
+      res.status(500).json({ error: "Failed to parse flight" });
+    }
+  });
+
+  app.post("/api/scan-schedule", async (req, res) => {
+    const { base64Data, mimeType } = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "GEMINI_API_KEY_MISSING" });
+    }
+
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          { inlineData: { data: base64Data, mimeType } },
+          { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its departure city, arrival city, departure_time, and arrival_time. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time." }
+        ],
+        config: {
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                flight_code: { type: Type.STRING },
+                departure_city: { type: Type.STRING },
+                arrival_city: { type: Type.STRING },
+                departure_time: { type: Type.STRING },
+                arrival_time: { type: Type.STRING }
+              },
+              required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time"]
+            }
+          }
+        }
+      });
+      
+      const extractedFlights = JSON.parse(response.text || '[]');
+      res.json(extractedFlights);
+    } catch (err) {
+      console.error("Server schedule scanning failed", err);
+      res.status(500).json({ error: "Failed to scan schedule" });
+    }
+  });
+
+  app.post("/api/edit-image", async (req, res) => {
+    const { base64Data, prompt } = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "GEMINI_API_KEY_MISSING" });
+    }
+
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            { inlineData: { data: base64Data, mimeType: 'image/png' } },
+            { text: prompt }
+          ]
+        }
+      });
+
+      let editedImage = null;
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          editedImage = `data:image/png;base64,${part.inlineData.data}`;
+          break;
+        }
+      }
+
+      if (editedImage) {
+        res.json({ editedImage });
+      } else {
+        res.status(500).json({ error: "No image generated" });
+      }
+    } catch (err) {
+      console.error("Server image editing failed", err);
+      res.status(500).json({ error: "Failed to edit image" });
+    }
+  });
+
   // End of API Routes
 
   app.patch("/api/proposals/:id", (req, res) => {

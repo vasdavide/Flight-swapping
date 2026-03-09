@@ -33,7 +33,6 @@ import {
   parseISO
 } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, Type } from "@google/genai";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Flight, SwapRequest, SwapProposal } from './types';
@@ -133,10 +132,6 @@ export default function App() {
 
     setIsScanning(true);
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY_MISSING");
-      }
-
       const reader = new FileReader();
       const base64Promise = new Promise<string>((resolve) => {
         reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
@@ -144,34 +139,21 @@ export default function App() {
       reader.readAsDataURL(file);
       const base64Data = await base64Promise;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          { inlineData: { data: base64Data, mimeType: file.type } },
-          { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its departure city, arrival city, departure time, and arrival time. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time." }
-        ],
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                flight_code: { type: Type.STRING },
-                departure_city: { type: Type.STRING },
-                arrival_city: { type: Type.STRING },
-                departure_time: { type: Type.STRING },
-                arrival_time: { type: Type.STRING }
-              },
-              required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time"]
-            }
-          }
-        }
+      const res = await fetch('/api/scan-schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64Data, mimeType: file.type })
       });
-      
-      const extractedFlights: Flight[] = JSON.parse(response.text || '[]');
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        if (errorData.error === "GEMINI_API_KEY_MISSING") {
+          throw new Error("GEMINI_API_KEY_MISSING");
+        }
+        throw new Error("Failed to scan schedule");
+      }
+
+      const extractedFlights: Flight[] = await res.json();
       
       if (extractedFlights.length === 0) {
         setAlertMessage("No flights detected in the image. Please try a clearer photo.");
@@ -248,65 +230,25 @@ export default function App() {
 
     setIsLoading(true);
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY_MISSING");
+      const res = await fetch('/api/parse-flight', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ flightCode, dateString })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        if (errorData.error === "GEMINI_API_KEY_MISSING") {
+          throw new Error("GEMINI_API_KEY_MISSING");
+        }
+        throw new Error(errorData.error || "Failed to parse flight");
       }
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      let response;
-      
-      try {
-        // Attempt 1: With Google Search for maximum accuracy
-        response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: `Use Google Search to find the current route and schedule for flight code "${flightCode}" on ${dateString}. 
-          I need the departure city, arrival city, departure time (local), and arrival time (local).
-          Search for the actual route (e.g. if CI104, search "CI104 flight route").
-          Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
-          config: {
-            tools: [{ googleSearch: {} }],
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                departure_city: { type: Type.STRING },
-                arrival_city: { type: Type.STRING },
-                departure_time: { type: Type.STRING, description: "HH:mm" },
-                arrival_time: { type: Type.STRING, description: "HH:mm" },
-              },
-              required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
-            }
-          }
-        });
-      } catch (searchErr) {
-        console.warn("Search grounding failed, retrying without tools...", searchErr);
-        // Attempt 2: Fallback to standard generation if search tool fails
-        response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: `Parse this flight code "${flightCode}" for the date ${dateString}. 
-          Provide the likely flight details (departure city, arrival city, departure time, arrival time).
-          Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                departure_city: { type: Type.STRING },
-                arrival_city: { type: Type.STRING },
-                departure_time: { type: Type.STRING, description: "HH:mm" },
-                arrival_time: { type: Type.STRING, description: "HH:mm" },
-              },
-              required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
-            }
-          }
-        });
-      }
-
-      const details = JSON.parse(response.text || '{}');
+      const details = await res.json();
 
       // If AI returns empty or invalid details, trigger the fallback in catch block
       if (!details || (!details.departure_city && !details.arrival_city)) {
-        throw new Error("AI could not parse flight details");
+        throw new Error("AI returned empty flight details");
       }
 
       const newFlight: Flight = {
@@ -330,8 +272,11 @@ export default function App() {
       console.error("Failed to add flight", err);
       
       if (err.message === "GEMINI_API_KEY_MISSING") {
-        setAlertMessage("Gemini API Key is missing. Please set GEMINI_API_KEY in the project settings to enable automatic flight parsing.");
+        setAlertMessage("Gemini API Key is missing. Please replace 'AI studio free tier' with an actual API key string (AIza...) in the project settings.");
+        return;
       }
+
+      const errorMessage = err.message || "Unknown error";
 
       // Fallback: Add flight with blank details if AI parsing fails
       try {
@@ -355,7 +300,7 @@ export default function App() {
         setIsAddingFlight(false);
         setFlightCode('');
         setSelectedDate(null);
-        setAlertMessage("Flight added with blank details (could not parse automatically).");
+        setAlertMessage(`Flight added with blank details. (Reason: ${errorMessage})`);
       } catch (fallbackErr) {
         console.error("Fallback add failed", fallbackErr);
         setAlertMessage("Failed to add flight. Please check your connection.");
@@ -571,28 +516,33 @@ export default function App() {
     if (!selectedImage || !editPrompt) return;
     setIsEditingImage(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const base64Data = selectedImage.split(',')[1];
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: {
-          parts: [
-            { inlineData: { data: base64Data, mimeType: 'image/png' } },
-            { text: editPrompt }
-          ]
-        }
+      const res = await fetch('/api/edit-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64Data, prompt: editPrompt })
       });
 
-      for (const part of response.candidates?.[0]?.content?.parts || []) {
-        if (part.inlineData) {
-          setSelectedImage(`data:image/png;base64,${part.inlineData.data}`);
-          break;
+      if (!res.ok) {
+        const errorData = await res.json();
+        if (errorData.error === "GEMINI_API_KEY_MISSING") {
+          throw new Error("GEMINI_API_KEY_MISSING");
         }
+        throw new Error("Failed to edit image");
       }
-      setEditPrompt('');
-    } catch (err) {
+
+      const { editedImage } = await res.json();
+      if (editedImage) {
+        setSelectedImage(editedImage);
+        setEditPrompt('');
+      }
+    } catch (err: any) {
       console.error("Failed to edit image", err);
-      setAlertMessage("Image editing failed. Please try a different prompt.");
+      if (err.message === "GEMINI_API_KEY_MISSING") {
+        setAlertMessage("Gemini API Key is missing. Please set GEMINI_API_KEY in the project settings to enable the AI Profile Enhancer.");
+      } else {
+        setAlertMessage("Image editing failed. Please try a different prompt.");
+      }
     } finally {
       setIsEditingImage(false);
     }
