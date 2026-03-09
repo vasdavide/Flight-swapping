@@ -33,6 +33,7 @@ import {
   parseISO
 } from 'date-fns';
 import { motion, AnimatePresence } from 'motion/react';
+import { GoogleGenAI, Type } from "@google/genai";
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { Flight, SwapRequest, SwapProposal } from './types';
@@ -139,14 +140,33 @@ export default function App() {
       reader.readAsDataURL(file);
       const base64Data = await base64Promise;
 
-      const res = await fetch('/api/ai/scan-schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64Data, mimeType: file.type })
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          { inlineData: { data: base64Data, mimeType: file.type } },
+          { text: "Extract all schedule entries from this image EXACTLY as they appear, row by row or day by day. Do not attempt to parse, guess, or format the data. If it says 'A31', put 'A31'. If it has a dash '-', put '-'. If it says 'AL', put 'AL'. Return ONLY a JSON array of objects with: flight_code (copy the exact text), departure_city (if present, otherwise empty string), arrival_city (if present, otherwise empty string), departure_time (if present, otherwise empty string), arrival_time (if present, otherwise empty string)." }
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                flight_code: { type: Type.STRING },
+                departure_city: { type: Type.STRING },
+                arrival_city: { type: Type.STRING },
+                departure_time: { type: Type.STRING },
+                arrival_time: { type: Type.STRING }
+              },
+              required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time"]
+            }
+          }
+        }
       });
       
-      if (!res.ok) throw new Error("Server error");
-      const extractedFlights: Flight[] = await res.json();
+      const extractedFlights: Flight[] = JSON.parse(response.text || '[]');
       
       if (extractedFlights.length === 0) {
         setAlertMessage("No flights detected in the image. Please try a clearer photo.");
@@ -157,9 +177,25 @@ export default function App() {
       let duplicateCount = 0;
       const currentFlights = [...flights];
 
-      // Save all extracted flights
-      for (const flight of extractedFlights) {
-        const isDuplicate = currentFlights.some(f => f.date === flight.date && f.flight_code.toUpperCase() === flight.flight_code.toUpperCase());
+      // Use the currently viewed month in the calendar
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+      // Save all extracted flights, mapping them to consecutive days
+      for (let i = 0; i < extractedFlights.length; i++) {
+        const flight = extractedFlights[i];
+        
+        // Don't exceed days in month
+        if (i >= daysInMonth) break;
+        
+        // Skip empty flight codes
+        if (!flight.flight_code || flight.flight_code.trim() === '') continue;
+
+        const day = i + 1;
+        const dateString = format(new Date(year, month, day), 'yyyy-MM-dd');
+
+        const isDuplicate = currentFlights.some(f => f.date === dateString && f.flight_code.toUpperCase() === flight.flight_code.toUpperCase());
         
         if (!isDuplicate) {
           await fetch('/api/flights', {
@@ -167,10 +203,11 @@ export default function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               ...flight,
+              date: dateString,
               user_email: loginId
             })
           });
-          currentFlights.push(flight);
+          currentFlights.push({...flight, date: dateString});
           addedCount++;
         } else {
           duplicateCount++;
@@ -202,14 +239,28 @@ export default function App() {
 
     setIsLoading(true);
     try {
-      const res = await fetch('/api/ai/parse-flight', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flightCode, date: dateString })
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Parse this flight code "${flightCode}" for the date ${dateString}. 
+        If it's a real-looking code (like AA123, BA456), generate plausible flight details (departure city, arrival city, departure time, arrival time).
+        Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              departure_city: { type: Type.STRING },
+              arrival_city: { type: Type.STRING },
+              departure_time: { type: Type.STRING, description: "HH:mm" },
+              arrival_time: { type: Type.STRING, description: "HH:mm" },
+            },
+            required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
+          }
+        }
       });
 
-      if (!res.ok) throw new Error("Server error");
-      const details = await res.json();
+      const details = JSON.parse(response.text || '{}');
 
       // If AI returns empty or invalid details, trigger the fallback in catch block
       if (!details || (!details.departure_city && !details.arrival_city)) {
@@ -473,18 +524,23 @@ export default function App() {
     if (!selectedImage || !editPrompt) return;
     setIsEditingImage(true);
     try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const base64Data = selectedImage.split(',')[1];
-      const res = await fetch('/api/ai/edit-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64Data, prompt: editPrompt })
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: {
+          parts: [
+            { inlineData: { data: base64Data, mimeType: 'image/png' } },
+            { text: editPrompt }
+          ]
+        }
       });
 
-      if (!res.ok) throw new Error("Server error");
-      const { base64Data: resultImage } = await res.json();
-
-      if (resultImage) {
-        setSelectedImage(`data:image/png;base64,${resultImage}`);
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          setSelectedImage(`data:image/png;base64,${part.inlineData.data}`);
+          break;
+        }
       }
       setEditPrompt('');
     } catch (err) {
@@ -766,7 +822,7 @@ export default function App() {
                   </button>
                   <label 
                     className={cn(
-                      "relative bg-white hover:bg-gray-50 text-gray-700 border border-black/5 w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-95 cursor-pointer",
+                      "relative bg-white hover:bg-gray-50 text-emerald-600 border border-emerald-200 w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-sm active:scale-95 cursor-pointer",
                       (isScanning || isLoading) && "opacity-50 cursor-not-allowed pointer-events-none"
                     )}
                     title="Scan Schedule"
@@ -838,13 +894,27 @@ export default function App() {
                             >
                               <div className="flex items-center justify-between">
                                 <span className="font-bold">{f.flight_code}</span>
-                                <button 
-                                  onClick={() => handleDeleteFlight(f.id!)}
-                                  className="text-gray-400 hover:text-red-600 transition-colors"
-                                  title="Remove flight"
-                                >
-                                  <X size={10} />
-                                </button>
+                                <div className="flex items-center gap-1.5">
+                                  <button 
+                                    onClick={() => !isListed && handlePostSwap(f.id!)}
+                                    disabled={isListed}
+                                    className={cn(
+                                      "flex items-center gap-0.5 transition-colors",
+                                      isListed ? "text-emerald-600" : "text-gray-400 hover:text-emerald-600"
+                                    )}
+                                    title={isListed ? "Already posted" : "Post to Swap Board"}
+                                  >
+                                    <ArrowRightLeft size={10} />
+                                    <span className="text-[8px] font-medium">{isListed ? "Listed" : "Swap"}</span>
+                                  </button>
+                                  <button 
+                                    onClick={() => handleDeleteFlight(f.id!)}
+                                    className="text-gray-400 hover:text-red-600 transition-colors"
+                                    title="Remove flight"
+                                  >
+                                    <X size={10} />
+                                  </button>
+                                </div>
                               </div>
                               <div className="flex items-center gap-1 opacity-80">
                                 <span>{f.departure_city}</span>
