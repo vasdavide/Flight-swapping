@@ -149,7 +149,7 @@ export default function App() {
         model: "gemini-3-flash-preview",
         contents: [
           { inlineData: { data: base64Data, mimeType: file.type } },
-          { text: "Extract all schedule entries from this image EXACTLY as they appear, row by row or day by day. Use your search tool if needed to verify flight routes for the extracted codes. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time." }
+          { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its departure city, arrival city, departure time, and arrival time. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time." }
         ],
         config: {
           tools: [{ googleSearch: {} }],
@@ -258,10 +258,10 @@ export default function App() {
       try {
         // Attempt 1: With Google Search for maximum accuracy
         response = await ai.models.generateContent({
-          model: "gemini-3.1-pro-preview",
-          contents: `Find the flight details for flight code "${flightCode}" on ${dateString}. 
-          Provide the departure city, arrival city, departure time (local), and arrival time (local).
-          If it's a real flight code (like CI104), find the actual route (e.g. Taipei to Tokyo).
+          model: "gemini-3-flash-preview",
+          contents: `Use Google Search to find the current route and schedule for flight code "${flightCode}" on ${dateString}. 
+          I need the departure city, arrival city, departure time (local), and arrival time (local).
+          Search for the actual route (e.g. if CI104, search "CI104 flight route").
           Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
           config: {
             tools: [{ googleSearch: {} }],
@@ -282,9 +282,9 @@ export default function App() {
         console.warn("Search grounding failed, retrying without tools...", searchErr);
         // Attempt 2: Fallback to standard generation if search tool fails
         response = await ai.models.generateContent({
-          model: "gemini-3.1-pro-preview",
+          model: "gemini-3-flash-preview",
           contents: `Parse this flight code "${flightCode}" for the date ${dateString}. 
-          If it's a real-looking code (like AA123, BA456), provide the likely flight details (departure city, arrival city, departure time, arrival time).
+          Provide the likely flight details (departure city, arrival city, departure time, arrival time).
           Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
           config: {
             responseMimeType: "application/json",
