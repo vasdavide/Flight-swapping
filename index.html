@@ -7,9 +7,30 @@
     <meta name="description" content="Flight swapping and schedule management for crew members." />
     <meta name="theme-color" content="#10b981" />
     <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+    <script>
+      window.onerror = function(msg, url, line, col, error) {
+        console.error("Global error:", msg, "at", url, ":", line, ":", col);
+        var root = document.getElementById('root');
+        if (root && (root.innerHTML === '' || root.innerHTML.includes('Loading'))) {
+          root.innerHTML = '<div style="padding: 20px; color: red; font-family: sans-serif;">' +
+            '<h2>Application Error</h2>' +
+            '<p>' + msg + '</p>' +
+            '<button onclick="window.location.reload()" style="padding: 10px; background: #10b981; color: white; border: none; border-radius: 5px;">Reload App</button>' +
+            '</div>';
+        }
+        return false;
+      };
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div style="display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; color: #10b981; background: #F8F9FA;">
+        <div style="text-align: center;">
+          <div style="font-size: 24px; font-weight: 600; margin-bottom: 8px;">SkyCrew Swap</div>
+          <div style="font-size: 14px; opacity: 0.7;">Loading your schedule...</div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

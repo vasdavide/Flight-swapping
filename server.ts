@@ -77,10 +77,19 @@ db.exec(`
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+  const PORT = 3000;
+
+  console.log("Starting server...");
+  console.log("NODE_ENV:", process.env.NODE_ENV);
+  console.log("__dirname:", __dirname);
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+  // Health check
+  app.get("/api/health", (req, res) => {
+    res.json({ status: "ok", env: process.env.NODE_ENV });
+  });
 
   // API Routes
   app.get("/api/flights", (req, res) => {
@@ -295,7 +304,10 @@ async function startServer() {
   });
 
   // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
+  const isProd = process.env.NODE_ENV === "production" || process.env.VITE_PROD === "true";
+  
+  if (!isProd) {
+    console.log("Starting Vite in middleware mode...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -303,6 +315,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, "dist");
+    console.log("Serving static files from:", distPath);
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

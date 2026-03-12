@@ -81,6 +81,7 @@ class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasErr
 }
 
 export default function App() {
+  console.log("App component initializing...");
   const [loginId, setLoginId] = useState<string>(() => {
     try {
       return localStorage.getItem('skycrew_login_id') || '';
