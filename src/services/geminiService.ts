@@ -1,8 +1,15 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+function getAI() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not set. Please configure it in the AI Studio Secrets panel.");
+  }
+  return new GoogleGenAI({ apiKey });
+}
 
 export async function parseFlight(flightCode: string, dateString: string) {
+  const ai = getAI();
   try {
     // Attempt 1: With Google Search
     let response = await ai.models.generateContent({
@@ -55,6 +62,7 @@ export async function parseFlight(flightCode: string, dateString: string) {
 }
 
 export async function scanSchedule(base64Data: string, mimeType: string) {
+  const ai = getAI();
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -92,6 +100,7 @@ export async function scanSchedule(base64Data: string, mimeType: string) {
 }
 
 export async function editImage(base64Data: string, prompt: string) {
+  const ai = getAI();
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
