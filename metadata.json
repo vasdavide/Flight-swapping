@@ -1,5 +1,5 @@
 {
-  "name": "Flight swapping search",
-  "description": "A schedule management and flight exchange app for flight attendants, powered by Gemini.",
+  "name": "SkyCrew Swap",
+  "description": "Flight swapping and schedule management for crew members.",
   "requestFramePermissions": ["camera"]
 }

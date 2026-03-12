@@ -113,8 +113,14 @@ async function startServer() {
              f.flight_code, f.departure_city, f.arrival_city, f.date, f.departure_time,
              f2.flight_code as return_code, f2.departure_city as return_dep, f2.arrival_city as return_arr, f2.date as return_date, f2.departure_time as return_time
       FROM swap_requests sr
-      JOIN flights f ON sr.flight_id = f.id
-      LEFT JOIN flights f2 ON sr.return_flight_id = f2.id
+      LEFT JOIN flights f ON (
+        sr.flight_id = f.id OR 
+        (sr.group_id IS NOT NULL AND f.id = (SELECT id FROM flights WHERE group_id = sr.group_id ORDER BY id ASC LIMIT 1))
+      )
+      LEFT JOIN flights f2 ON (
+        sr.return_flight_id = f2.id OR 
+        (sr.group_id IS NOT NULL AND f2.id = (SELECT id FROM flights WHERE group_id = sr.group_id ORDER BY id ASC LIMIT 1 OFFSET 1))
+      )
       WHERE sr.status = 'pending'
     `).all();
     res.json(swaps);
@@ -224,36 +230,52 @@ async function startServer() {
       const proposal = db.prepare("SELECT * FROM swap_proposals WHERE id = ?").get(id);
       const listing = db.prepare("SELECT * FROM swap_requests WHERE id = ?").get(proposal.listing_id);
       
-      const myFlightId = listing.flight_id;
-      const myReturnId = listing.return_flight_id;
+      let requesterFlights = [];
+      if (listing.group_id) {
+        requesterFlights = db.prepare("SELECT * FROM flights WHERE group_id = ? ORDER BY id ASC").all(listing.group_id);
+      } else {
+        const f1 = db.prepare("SELECT * FROM flights WHERE id = ?").get(listing.flight_id);
+        if (f1) requesterFlights.push(f1);
+        if (listing.return_flight_id) {
+          const f2 = db.prepare("SELECT * FROM flights WHERE id = ?").get(listing.return_flight_id);
+          if (f2) requesterFlights.push(f2);
+        }
+      }
+
+      if (requesterFlights.length === 0) return res.status(400).json({ error: "No flights found for this listing" });
+
+      const requesterEmail = requesterFlights[0].user_email;
+      const proposerEmail = proposal.proposer_email;
+
       const offeredFlightId = proposal.proposer_flight_id;
       const offeredReturnId = proposal.proposer_flight_id_return;
 
-      const myEmail = db.prepare("SELECT user_email FROM flights WHERE id = ?").get(myFlightId).user_email;
-      
-      // Perform the swap for main flight
+      // Swap main flight(s)
       if (offeredFlightId) {
+        // 1-for-1 or Group-for-1
         const offeredEmail = db.prepare("SELECT user_email FROM flights WHERE id = ?").get(offeredFlightId).user_email;
-        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(offeredEmail, myFlightId);
-        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(myEmail, offeredFlightId);
-      } else {
-        // Just take the flight (Day Off)
-        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposal.proposer_email, myFlightId);
-      }
+        
+        // Requester takes proposer's main flight
+        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(requesterEmail, offeredFlightId);
+        
+        // Proposer takes requester's first flight
+        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposerEmail, requesterFlights[0].id);
 
-      // Perform the swap for return flight if both exist
-      if (myReturnId) {
-        if (offeredReturnId) {
-          const offeredEmail = db.prepare("SELECT user_email FROM flights WHERE id = ?").get(offeredReturnId).user_email;
-          db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(offeredEmail, myReturnId);
-          db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(myEmail, offeredReturnId);
-        } else {
-          // If proposer didn't offer a return but requester had one, what happens?
-          // Usually they should swap the whole pair.
-          // If proposer is on Day Off, they take both?
-          if (!offeredFlightId) {
-            db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposal.proposer_email, myReturnId);
+        // If proposer offered a return flight
+        if (offeredReturnId && requesterFlights.length > 1) {
+          db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(requesterEmail, offeredReturnId);
+          db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposerEmail, requesterFlights[1].id);
+        } else if (requesterFlights.length > 1) {
+          // Proposer takes the rest of the group too? 
+          // If it's a group, they usually go together.
+          for (let i = 1; i < requesterFlights.length; i++) {
+            db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposerEmail, requesterFlights[i].id);
           }
+        }
+      } else {
+        // Proposer is on Day Off, they take all requester flights
+        for (const f of requesterFlights) {
+          db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposerEmail, f.id);
         }
       }
 

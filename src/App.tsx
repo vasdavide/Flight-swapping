@@ -69,6 +69,17 @@ export default function App() {
     });
   }, [outgoingProposals, outgoingSortField, outgoingSortOrder]);
   
+  const [swapFilterDep, setSwapFilterDep] = useState('');
+  const [swapFilterArr, setSwapFilterArr] = useState('');
+
+  const filteredSwaps = useMemo(() => {
+    return swaps.filter(swap => {
+      const depMatch = !swapFilterDep || swap.departure_city.toLowerCase().includes(swapFilterDep.toLowerCase());
+      const arrMatch = !swapFilterArr || swap.arrival_city.toLowerCase().includes(swapFilterArr.toLowerCase());
+      return depMatch && arrMatch;
+    });
+  }, [swaps, swapFilterDep, swapFilterArr]);
+
   const [selectedFlightForDetails, setSelectedFlightForDetails] = useState<Flight | null>(null);
   const [isAddingFlight, setIsAddingFlight] = useState(false);
   const [isProposingSwap, setIsProposingSwap] = useState(false);
@@ -458,15 +469,25 @@ export default function App() {
   const handlePostSwap = async (flightId: number) => {
     try {
       const mainFlight = flights.find(f => f.id === flightId);
-      let returnId = null;
-      if (mainFlight) {
-        const returnLeg = flights.find(f => 
-          f.id !== flightId && 
-          f.departure_city === mainFlight.arrival_city &&
-          (f.date === mainFlight.date || parseISO(f.date) > parseISO(mainFlight.date))
-        );
-        if (returnLeg) returnId = returnLeg.id;
+      if (!mainFlight) {
+        throw new Error("Flight not found");
       }
+
+      const isListed = swaps.some(s => 
+        (s.flight_id === mainFlight.id) || 
+        (mainFlight.group_id && s.group_id === mainFlight.group_id)
+      );
+      if (isListed) {
+        throw new Error("Flight already listed");
+      }
+
+      let returnId = null;
+      const returnLeg = flights.find(f => 
+        f.id !== flightId && 
+        f.departure_city === mainFlight.arrival_city &&
+        (f.date === mainFlight.date || parseISO(f.date) > parseISO(mainFlight.date))
+      );
+      if (returnLeg) returnId = returnLeg.id;
 
       let payload: any = { requester_email: loginId };
       
@@ -912,7 +933,10 @@ export default function App() {
                         
                         <div className="mt-2 space-y-1">
                           {dayFlights.map(f => {
-                            const isListed = swaps.some(s => s.flight_id === f.id);
+                            const isListed = swaps.some(s => 
+                              (s.flight_id === f.id) || 
+                              (f.group_id && s.group_id === f.group_id)
+                            );
                             return (
                             <div 
                               key={f.id} 
@@ -1140,19 +1164,55 @@ export default function App() {
               )}
 
               <section className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-3xl font-light">Available Listings</h2>
-                  <div className="text-sm text-gray-500">Flights posted by other crew members</div>
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div>
+                    <h2 className="text-3xl font-light">Available Listings</h2>
+                    <div className="text-sm text-gray-500">Flights posted by other crew members</div>
+                  </div>
+                  
+                  <div className="flex flex-wrap gap-2">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input 
+                        type="text" 
+                        placeholder="Filter Departure..." 
+                        value={swapFilterDep}
+                        onChange={(e) => setSwapFilterDep(e.target.value)}
+                        className="pl-9 pr-4 py-2 bg-white border border-black/5 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 w-40"
+                      />
+                    </div>
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input 
+                        type="text" 
+                        placeholder="Filter Arrival..." 
+                        value={swapFilterArr}
+                        onChange={(e) => setSwapFilterArr(e.target.value)}
+                        className="pl-9 pr-4 py-2 bg-white border border-black/5 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 w-40"
+                      />
+                    </div>
+                    {(swapFilterDep || swapFilterArr) && (
+                      <button 
+                        onClick={() => {
+                          setSwapFilterDep('');
+                          setSwapFilterArr('');
+                        }}
+                        className="px-3 py-2 text-xs font-bold text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {swaps.length === 0 ? (
+                  {filteredSwaps.length === 0 ? (
                     <div className="col-span-full py-20 text-center text-gray-400 bg-white rounded-2xl border border-dashed border-gray-200">
                       <ArrowRightLeft size={48} className="mx-auto mb-4 opacity-20" />
-                      <p>No active swap requests. Post one from your calendar!</p>
+                      <p>{swaps.length === 0 ? "No active swap requests. Post one from your calendar!" : "No listings match your filters."}</p>
                     </div>
                   ) : (
-                    swaps.map(swap => (
+                    filteredSwaps.map(swap => (
                       <div key={swap.id} className="bg-white p-5 rounded-2xl shadow-sm border border-black/5 hover:shadow-md transition-shadow">
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-2">
@@ -1171,6 +1231,9 @@ export default function App() {
                               <span className="text-[9px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full uppercase tracking-wider">
                                 {swap.return_code}
                               </span>
+                            )}
+                            {swap.group_id && !swap.return_code && (
+                              <span className="text-[8px] text-gray-400 italic">Grouped Trip</span>
                             )}
                           </div>
                         </div>
@@ -1635,15 +1698,29 @@ export default function App() {
                   )}
 
                   <div className="flex gap-3 pt-4">
-                    <button 
-                      onClick={() => {
-                        handlePostSwap(selectedFlightForDetails.id!);
-                        setSelectedFlightForDetails(null);
-                      }}
-                      className="flex-1 bg-black text-white py-4 rounded-2xl font-bold hover:bg-gray-800 transition-all active:scale-[0.98]"
-                    >
-                      List for Swap
-                    </button>
+                    {(() => {
+                      const isListed = swaps.some(s => 
+                        (s.flight_id === selectedFlightForDetails.id) || 
+                        (selectedFlightForDetails.group_id && s.group_id === selectedFlightForDetails.group_id)
+                      );
+                      return (
+                        <button 
+                          onClick={() => {
+                            if (!isListed) {
+                              handlePostSwap(selectedFlightForDetails.id!);
+                              setSelectedFlightForDetails(null);
+                            }
+                          }}
+                          disabled={isListed}
+                          className={cn(
+                            "flex-1 py-4 rounded-2xl font-bold transition-all active:scale-[0.98]",
+                            isListed ? "bg-gray-100 text-gray-400 cursor-not-allowed" : "bg-black text-white hover:bg-gray-800"
+                          )}
+                        >
+                          {isListed ? "Already Listed" : "List for Swap"}
+                        </button>
+                      );
+                    })()}
                     <button 
                       onClick={() => {
                         if (confirm("Are you sure you want to delete this flight?")) {
