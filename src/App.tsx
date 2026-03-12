@@ -33,6 +33,7 @@ import {
   eachDayOfInterval,
   parseISO
 } from 'date-fns';
+import { parseFlight, scanSchedule, editImage } from './services/geminiService';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -160,21 +161,7 @@ export default function App() {
       reader.readAsDataURL(file);
       const base64Data = await base64Promise;
 
-      const res = await fetch('/api/scan-schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64Data, mimeType: file.type })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        if (errorData.error === "GEMINI_API_KEY_MISSING") {
-          throw new Error("GEMINI_API_KEY_MISSING");
-        }
-        throw new Error("Failed to scan schedule");
-      }
-
-      const extractedFlights: Flight[] = await res.json();
+      const extractedFlights: Flight[] = await scanSchedule(base64Data, file.type);
       
       if (extractedFlights.length === 0) {
         setAlertMessage("No flights detected in the image. Please try a clearer photo.");
@@ -242,48 +229,63 @@ export default function App() {
     if (!flightCode || !selectedDate) return;
     
     const dateString = format(selectedDate, 'yyyy-MM-dd');
-    const isDuplicate = flights.some(f => f.date === dateString && f.flight_code.toUpperCase() === flightCode.toUpperCase());
+    const codes = flightCode.split('/').map(c => c.trim());
+    
+    // Simple logic: if ci100/1, add ci100 and ci101. If ci100/101, add ci100 and ci101.
+    const flightCodes: string[] = [];
+    if (codes.length === 2 && /^\d+$/.test(codes[1])) {
+      const base = codes[0].replace(/\d+$/, '');
+      const num = parseInt(codes[0].match(/\d+$/)?.[0] || '0');
+      
+      flightCodes.push(codes[0].toUpperCase());
+      
+      if (parseInt(codes[1]) > num) {
+        // Treat as full number
+        flightCodes.push(`${base}${codes[1]}`.toUpperCase());
+      } else {
+        // Treat as offset
+        flightCodes.push(`${base}${num + parseInt(codes[1])}`.toUpperCase());
+      }
+    } else {
+      flightCodes.push(...codes.map(c => c.toUpperCase()));
+    }
+    
+    const isDuplicate = flights.some(f => f.date === dateString && flightCodes.includes(f.flight_code.toUpperCase()));
     
     if (isDuplicate) {
-      setAlertMessage(`Flight ${flightCode.toUpperCase()} already exists on ${dateString}.`);
+      setAlertMessage(`One of the flights already exists on ${dateString}.`);
       return;
     }
 
     setIsLoading(true);
     try {
-      const res = await fetch('/api/parse-flight', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flightCode, dateString })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        if (errorData.error === "GEMINI_API_KEY_MISSING") {
-          throw new Error("GEMINI_API_KEY_MISSING");
+      const groupId = Date.now().toString();
+      for (const code of flightCodes) {
+        let details: any = {};
+        try {
+          details = await parseFlight(code, dateString);
+        } catch (err) {
+          console.warn("Failed to parse flight, using raw code", err);
         }
-        throw new Error(errorData.error || "Failed to parse flight");
+
+        const newFlight: Flight = {
+          user_email: loginId,
+          flight_code: code.toUpperCase(),
+          date: dateString,
+          group_id: groupId,
+          departure_city: details.departure_city || 'Unknown',
+          arrival_city: details.arrival_city || 'Unknown',
+          departure_time: details.departure_time || '00:00',
+          arrival_time: details.arrival_time || '00:00',
+          ...details
+        };
+
+        await fetch('/api/flights', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newFlight)
+        });
       }
-
-      const details = await res.json();
-
-      // If AI returns empty or invalid details, trigger the fallback in catch block
-      if (!details || (!details.departure_city && !details.arrival_city)) {
-        throw new Error("AI returned empty flight details");
-      }
-
-      const newFlight: Flight = {
-        user_email: loginId,
-        flight_code: flightCode.toUpperCase(),
-        date: format(selectedDate, 'yyyy-MM-dd'),
-        ...details
-      };
-
-      await fetch('/api/flights', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newFlight)
-      });
 
       await fetchFlights();
       setIsAddingFlight(false);
@@ -466,14 +468,19 @@ export default function App() {
         if (returnLeg) returnId = returnLeg.id;
       }
 
+      let payload: any = { requester_email: loginId };
+      
+      if (mainFlight.group_id) {
+        payload.group_id = mainFlight.group_id;
+      } else {
+        payload.flight_id = flightId;
+        payload.return_flight_id = returnId;
+      }
+
       const res = await fetch('/api/swaps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          requester_email: loginId, 
-          flight_id: flightId,
-          return_flight_id: returnId
-        })
+        body: JSON.stringify(payload)
       });
       if (!res.ok) {
         const data = await res.json();
@@ -555,32 +562,17 @@ export default function App() {
     setIsEditingImage(true);
     try {
       const base64Data = selectedImage.split(',')[1];
-      const res = await fetch('/api/edit-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base64Data, prompt: editPrompt })
-      });
+      const editedImage = await editImage(base64Data, editPrompt);
 
-      if (!res.ok) {
-        const errorData = await res.json();
-        if (errorData.error === "GEMINI_API_KEY_MISSING") {
-          throw new Error("GEMINI_API_KEY_MISSING");
-        }
-        throw new Error("Failed to edit image");
-      }
-
-      const { editedImage } = await res.json();
       if (editedImage) {
         setSelectedImage(editedImage);
         setEditPrompt('');
+      } else {
+        throw new Error("Failed to edit image");
       }
     } catch (err: any) {
       console.error("Failed to edit image", err);
-      if (err.message === "GEMINI_API_KEY_MISSING") {
-        setAlertMessage("Gemini API Key is missing. Please set GEMINI_API_KEY in the project settings to enable the AI Profile Enhancer.");
-      } else {
-        setAlertMessage("Image editing failed. Please try a different prompt.");
-      }
+      setAlertMessage("Image editing failed. Please try a different prompt.");
     } finally {
       setIsEditingImage(false);
     }

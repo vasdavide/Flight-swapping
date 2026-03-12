@@ -10,6 +10,7 @@ export interface Flight {
   pilot?: string;
   aircraft?: string;
   layover?: string;
+  group_id?: string;
 }
 
 export interface SwapRequest {
@@ -17,6 +18,7 @@ export interface SwapRequest {
   requester_email: string;
   flight_id: number;
   return_flight_id?: number;
+  group_id?: string;
   status: 'pending' | 'completed' | 'cancelled';
   created_at: string;
   flight_code: string;
