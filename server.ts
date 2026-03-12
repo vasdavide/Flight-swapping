@@ -23,16 +23,21 @@ db.exec(`
     arrival_city TEXT,
     departure_time TEXT,
     arrival_time TEXT,
-    date TEXT
+    date TEXT,
+    pilot TEXT,
+    aircraft TEXT,
+    layover TEXT
   );
 
   CREATE TABLE IF NOT EXISTS swap_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     requester_email TEXT,
     flight_id INTEGER,
+    return_flight_id INTEGER,
     status TEXT DEFAULT 'pending',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(flight_id) REFERENCES flights(id)
+    FOREIGN KEY(flight_id) REFERENCES flights(id),
+    FOREIGN KEY(return_flight_id) REFERENCES flights(id)
   );
 
   CREATE TABLE IF NOT EXISTS swap_proposals (
@@ -40,10 +45,12 @@ db.exec(`
     listing_id INTEGER,
     proposer_email TEXT,
     proposer_flight_id INTEGER,
+    proposer_flight_id_return INTEGER,
     status TEXT DEFAULT 'pending',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(listing_id) REFERENCES swap_requests(id),
-    FOREIGN KEY(proposer_flight_id) REFERENCES flights(id)
+    FOREIGN KEY(proposer_flight_id) REFERENCES flights(id),
+    FOREIGN KEY(proposer_flight_id_return) REFERENCES flights(id)
   );
 `);
 
@@ -62,11 +69,11 @@ async function startServer() {
   });
 
   app.post("/api/flights", (req, res) => {
-    const { user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date } = req.body;
+    const { user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover } = req.body;
     const info = db.prepare(`
-      INSERT INTO flights (user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date);
+      INSERT INTO flights (user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover);
     res.json({ id: info.lastInsertRowid });
   });
 
@@ -81,21 +88,24 @@ async function startServer() {
 
   app.get("/api/swaps", (req, res) => {
     const swaps = db.prepare(`
-      SELECT sr.*, f.flight_code, f.departure_city, f.arrival_city, f.date, f.departure_time
+      SELECT sr.*, 
+             f.flight_code, f.departure_city, f.arrival_city, f.date, f.departure_time,
+             f2.flight_code as return_code, f2.departure_city as return_dep, f2.arrival_city as return_arr, f2.date as return_date, f2.departure_time as return_time
       FROM swap_requests sr
       JOIN flights f ON sr.flight_id = f.id
+      LEFT JOIN flights f2 ON sr.return_flight_id = f2.id
       WHERE sr.status = 'pending'
     `).all();
     res.json(swaps);
   });
 
   app.post("/api/swaps", (req, res) => {
-    const { requester_email, flight_id } = req.body;
+    const { requester_email, flight_id, return_flight_id } = req.body;
     // Check if already listed
     const existing = db.prepare("SELECT * FROM swap_requests WHERE flight_id = ? AND status = 'pending'").get(flight_id);
     if (existing) return res.status(400).json({ error: "Flight already listed" });
 
-    const info = db.prepare("INSERT INTO swap_requests (requester_email, flight_id) VALUES (?, ?)").run(requester_email, flight_id);
+    const info = db.prepare("INSERT INTO swap_requests (requester_email, flight_id, return_flight_id) VALUES (?, ?, ?)").run(requester_email, flight_id, return_flight_id);
     res.json({ id: info.lastInsertRowid });
   });
 
@@ -108,11 +118,11 @@ async function startServer() {
 
   // Proposals
   app.post("/api/proposals", (req, res) => {
-    const { listing_id, proposer_email, proposer_flight_id } = req.body;
+    const { listing_id, proposer_email, proposer_flight_id, proposer_flight_id_return } = req.body;
     const info = db.prepare(`
-      INSERT INTO swap_proposals (listing_id, proposer_email, proposer_flight_id)
-      VALUES (?, ?, ?)
-    `).run(listing_id, proposer_email, proposer_flight_id);
+      INSERT INTO swap_proposals (listing_id, proposer_email, proposer_flight_id, proposer_flight_id_return)
+      VALUES (?, ?, ?, ?)
+    `).run(listing_id, proposer_email, proposer_flight_id, proposer_flight_id_return);
     res.json({ id: info.lastInsertRowid });
   });
 
@@ -121,11 +131,15 @@ async function startServer() {
     const proposals = db.prepare(`
       SELECT sp.*, 
              f_offered.flight_code as offered_code, f_offered.departure_city as offered_dep, f_offered.arrival_city as offered_arr, f_offered.date as offered_date,
-             f_mine.flight_code as my_code, f_mine.departure_city as my_dep, f_mine.arrival_city as my_arr, f_mine.date as my_date
+             f_offered_ret.flight_code as offered_ret_code,
+             f_mine.flight_code as my_code, f_mine.departure_city as my_dep, f_mine.arrival_city as my_arr, f_mine.date as my_date,
+             f_mine_ret.flight_code as my_ret_code
       FROM swap_proposals sp
       JOIN swap_requests sr ON sp.listing_id = sr.id
       JOIN flights f_mine ON sr.flight_id = f_mine.id
-      JOIN flights f_offered ON sp.proposer_flight_id = f_offered.id
+      LEFT JOIN flights f_mine_ret ON sr.return_flight_id = f_mine_ret.id
+      LEFT JOIN flights f_offered ON sp.proposer_flight_id = f_offered.id
+      LEFT JOIN flights f_offered_ret ON sp.proposer_flight_id_return = f_offered_ret.id
       WHERE sr.requester_email = ? AND sp.status = 'pending'
     `).all(email);
     res.json(proposals);
@@ -136,11 +150,15 @@ async function startServer() {
     const proposals = db.prepare(`
       SELECT sp.*, 
              f_offered.flight_code as offered_code, f_offered.departure_city as offered_dep, f_offered.arrival_city as offered_arr, f_offered.date as offered_date,
-             f_target.flight_code as target_code, f_target.departure_city as target_dep, f_target.arrival_city as target_arr, f_target.date as target_date
+             f_offered_ret.flight_code as offered_ret_code,
+             f_target.flight_code as target_code, f_target.departure_city as target_dep, f_target.arrival_city as target_arr, f_target.date as target_date,
+             f_target_ret.flight_code as target_ret_code
       FROM swap_proposals sp
       JOIN swap_requests sr ON sp.listing_id = sr.id
       JOIN flights f_target ON sr.flight_id = f_target.id
-      JOIN flights f_offered ON sp.proposer_flight_id = f_offered.id
+      LEFT JOIN flights f_target_ret ON sr.return_flight_id = f_target_ret.id
+      LEFT JOIN flights f_offered ON sp.proposer_flight_id = f_offered.id
+      LEFT JOIN flights f_offered_ret ON sp.proposer_flight_id_return = f_offered_ret.id
       WHERE sp.proposer_email = ?
     `).all(email);
     res.json(proposals);
@@ -180,9 +198,9 @@ async function startServer() {
         response = await ai.models.generateContent({
           model: "gemini-3-flash-preview",
           contents: `Use Google Search to find the current route and schedule for flight code "${flightCode}" on ${dateString}. 
-          I need the departure city, arrival city, departure time (local), and arrival time (local).
+          I need the departure city, arrival city, departure time (local), arrival time (local), aircraft type, and any layover information if applicable.
           Search for the actual route (e.g. if CI104, search "CI104 flight route").
-          Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
+          Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time, aircraft, layover.`,
           config: {
             tools: [{ googleSearch: {} }],
             responseMimeType: "application/json",
@@ -193,6 +211,8 @@ async function startServer() {
                 arrival_city: { type: Type.STRING },
                 departure_time: { type: Type.STRING, description: "HH:mm" },
                 arrival_time: { type: Type.STRING, description: "HH:mm" },
+                aircraft: { type: Type.STRING },
+                layover: { type: Type.STRING },
               },
               required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
             }
@@ -242,7 +262,7 @@ async function startServer() {
         model: "gemini-3-flash-preview",
         contents: [
           { inlineData: { data: base64Data, mimeType } },
-          { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its departure city, arrival city, departure_time, and arrival_time. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time." }
+          { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its departure city, arrival city, departure_time, arrival_time, aircraft type, and layover info. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time, aircraft, layover." }
         ],
         config: {
           tools: [{ googleSearch: {} }],
@@ -256,7 +276,9 @@ async function startServer() {
                 departure_city: { type: Type.STRING },
                 arrival_city: { type: Type.STRING },
                 departure_time: { type: Type.STRING },
-                arrival_time: { type: Type.STRING }
+                arrival_time: { type: Type.STRING },
+                aircraft: { type: Type.STRING },
+                layover: { type: Type.STRING }
               },
               required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time"]
             }
@@ -320,14 +342,37 @@ async function startServer() {
       const listing = db.prepare("SELECT * FROM swap_requests WHERE id = ?").get(proposal.listing_id);
       
       const myFlightId = listing.flight_id;
+      const myReturnId = listing.return_flight_id;
       const offeredFlightId = proposal.proposer_flight_id;
+      const offeredReturnId = proposal.proposer_flight_id_return;
 
-      const myFlight = db.prepare("SELECT * FROM flights WHERE id = ?").get(myFlightId);
-      const offeredFlight = db.prepare("SELECT * FROM flights WHERE id = ?").get(offeredFlightId);
+      const myEmail = db.prepare("SELECT user_email FROM flights WHERE id = ?").get(myFlightId).user_email;
+      
+      // Perform the swap for main flight
+      if (offeredFlightId) {
+        const offeredEmail = db.prepare("SELECT user_email FROM flights WHERE id = ?").get(offeredFlightId).user_email;
+        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(offeredEmail, myFlightId);
+        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(myEmail, offeredFlightId);
+      } else {
+        // Just take the flight (Day Off)
+        db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposal.proposer_email, myFlightId);
+      }
 
-      // Perform the swap
-      db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(offeredFlight.user_email, myFlightId);
-      db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(myFlight.user_email, offeredFlightId);
+      // Perform the swap for return flight if both exist
+      if (myReturnId) {
+        if (offeredReturnId) {
+          const offeredEmail = db.prepare("SELECT user_email FROM flights WHERE id = ?").get(offeredReturnId).user_email;
+          db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(offeredEmail, myReturnId);
+          db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(myEmail, offeredReturnId);
+        } else {
+          // If proposer didn't offer a return but requester had one, what happens?
+          // Usually they should swap the whole pair.
+          // If proposer is on Day Off, they take both?
+          if (!offeredFlightId) {
+            db.prepare("UPDATE flights SET user_email = ? WHERE id = ?").run(proposal.proposer_email, myReturnId);
+          }
+        }
+      }
 
       // Mark listing as completed
       db.prepare("UPDATE swap_requests SET status = 'completed' WHERE id = ?").run(listing.id);

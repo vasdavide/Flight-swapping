@@ -3,6 +3,7 @@ import {
   Calendar as CalendarIcon, 
   Plane, 
   ArrowRightLeft, 
+  ArrowUpDown,
   Plus, 
   X, 
   ChevronLeft, 
@@ -48,11 +49,31 @@ export default function App() {
   const [swaps, setSwaps] = useState<SwapRequest[]>([]);
   const [incomingProposals, setIncomingProposals] = useState<SwapProposal[]>([]);
   const [outgoingProposals, setOutgoingProposals] = useState<SwapProposal[]>([]);
+  const [outgoingSortField, setOutgoingSortField] = useState<'status' | 'target_code' | 'target_date' | 'created_at'>('created_at');
+  const [outgoingSortOrder, setOutgoingSortOrder] = useState<'asc' | 'desc'>('desc');
   
+  const sortedOutgoingProposals = useMemo(() => {
+    return [...outgoingProposals].sort((a, b) => {
+      let comparison = 0;
+      if (outgoingSortField === 'status') {
+        comparison = a.status.localeCompare(b.status);
+      } else if (outgoingSortField === 'target_code') {
+        comparison = (a.target_code || '').localeCompare(b.target_code || '');
+      } else if (outgoingSortField === 'target_date') {
+        comparison = (a.target_date || '').localeCompare(b.target_date || '');
+      } else {
+        comparison = a.created_at.localeCompare(b.created_at);
+      }
+      return outgoingSortOrder === 'asc' ? comparison : -comparison;
+    });
+  }, [outgoingProposals, outgoingSortField, outgoingSortOrder]);
+  
+  const [selectedFlightForDetails, setSelectedFlightForDetails] = useState<Flight | null>(null);
   const [isAddingFlight, setIsAddingFlight] = useState(false);
   const [isProposingSwap, setIsProposingSwap] = useState(false);
   const [selectedListing, setSelectedListing] = useState<SwapRequest | null>(null);
-  const [offeredFlightId, setOfferedFlightId] = useState<number | null>(null);
+  const [offeredFlightId, setOfferedFlightId] = useState<number | null | undefined>(undefined);
+  const [offeredReturnId, setOfferedReturnId] = useState<number | null>(null);
   const [flightCode, setFlightCode] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -434,10 +455,25 @@ export default function App() {
 
   const handlePostSwap = async (flightId: number) => {
     try {
+      const mainFlight = flights.find(f => f.id === flightId);
+      let returnId = null;
+      if (mainFlight) {
+        const returnLeg = flights.find(f => 
+          f.id !== flightId && 
+          f.departure_city === mainFlight.arrival_city &&
+          (f.date === mainFlight.date || parseISO(f.date) > parseISO(mainFlight.date))
+        );
+        if (returnLeg) returnId = returnLeg.id;
+      }
+
       const res = await fetch('/api/swaps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requester_email: loginId, flight_id: flightId })
+        body: JSON.stringify({ 
+          requester_email: loginId, 
+          flight_id: flightId,
+          return_flight_id: returnId
+        })
       });
       if (!res.ok) {
         const data = await res.json();
@@ -464,7 +500,7 @@ export default function App() {
   };
 
   const handleProposeSwap = async () => {
-    if (!selectedListing || !offeredFlightId) return;
+    if (!selectedListing) return;
     try {
       await fetch('/api/proposals', {
         method: 'POST',
@@ -472,13 +508,15 @@ export default function App() {
         body: JSON.stringify({
           listing_id: selectedListing.id,
           proposer_email: loginId,
-          proposer_flight_id: offeredFlightId
+          proposer_flight_id: offeredFlightId,
+          proposer_flight_id_return: offeredReturnId
         })
       });
       alert("Proposal sent!");
       setIsProposingSwap(false);
       setSelectedListing(null);
       setOfferedFlightId(null);
+      setOfferedReturnId(null);
       fetchProposals();
     } catch (err) {
       console.error("Failed to propose swap", err);
@@ -886,8 +924,11 @@ export default function App() {
                             return (
                             <div 
                               key={f.id} 
-                              onClick={(e) => e.stopPropagation()}
-                              className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-1.5 rounded-lg text-[10px] flex flex-col gap-0.5 group/flight relative"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedFlightForDetails(f);
+                              }}
+                              className="bg-emerald-50 border border-emerald-100 text-emerald-800 p-1.5 rounded-lg text-[10px] flex flex-col gap-0.5 group/flight relative cursor-pointer hover:bg-emerald-100 transition-colors"
                             >
                               <div className="flex items-center justify-between">
                                 <span className="font-bold">{f.flight_code}</span>
@@ -975,11 +1016,13 @@ export default function App() {
                         <div className="flex items-center justify-between gap-4 mb-4">
                           <div className="flex-1 text-center">
                             <div className="text-sm font-bold">{prop.my_code}</div>
+                            {prop.my_ret_code && <div className="text-[10px] text-blue-600 font-bold">{prop.my_ret_code}</div>}
                             <div className="text-[10px] text-gray-400">Your Flight</div>
                           </div>
                           <ArrowRightLeft size={16} className="text-emerald-400" />
                           <div className="flex-1 text-center">
                             <div className="text-sm font-bold">{prop.offered_code}</div>
+                            {prop.offered_ret_code && <div className="text-[10px] text-blue-600 font-bold">{prop.offered_ret_code}</div>}
                             <div className="text-[10px] text-gray-400">Their Offer</div>
                           </div>
                         </div>
@@ -1016,9 +1059,63 @@ export default function App() {
               {/* Outgoing Proposals Section */}
               {outgoingProposals.length > 0 && (
                 <section className="space-y-4">
-                  <h3 className="text-lg font-semibold text-gray-500">Your Sent Proposals</h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-gray-500">Your Sent Proposals</h3>
+                    <div className="flex items-center gap-2">
+                      <div className="flex bg-gray-100 p-1 rounded-xl">
+                        <button 
+                          onClick={() => {
+                            if (outgoingSortField === 'status') {
+                              setOutgoingSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setOutgoingSortField('status');
+                              setOutgoingSortOrder('asc');
+                            }
+                          }}
+                          className={cn(
+                            "px-3 py-1 text-[10px] font-bold rounded-lg transition-all flex items-center gap-1",
+                            outgoingSortField === 'status' ? "bg-white shadow-sm text-emerald-600" : "text-gray-400 hover:text-gray-600"
+                          )}
+                        >
+                          Status {outgoingSortField === 'status' && <ArrowUpDown size={10} />}
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if (outgoingSortField === 'target_code') {
+                              setOutgoingSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setOutgoingSortField('target_code');
+                              setOutgoingSortOrder('asc');
+                            }
+                          }}
+                          className={cn(
+                            "px-3 py-1 text-[10px] font-bold rounded-lg transition-all flex items-center gap-1",
+                            outgoingSortField === 'target_code' ? "bg-white shadow-sm text-emerald-600" : "text-gray-400 hover:text-gray-600"
+                          )}
+                        >
+                          Target {outgoingSortField === 'target_code' && <ArrowUpDown size={10} />}
+                        </button>
+                        <button 
+                          onClick={() => {
+                            if (outgoingSortField === 'target_date') {
+                              setOutgoingSortOrder(prev => prev === 'asc' ? 'desc' : 'asc');
+                            } else {
+                              setOutgoingSortField('target_date');
+                              setOutgoingSortOrder('asc');
+                            }
+                          }}
+                          className={cn(
+                            "px-3 py-1 text-[10px] font-bold rounded-lg transition-all flex items-center gap-1",
+                            outgoingSortField === 'target_date' ? "bg-white shadow-sm text-emerald-600" : "text-gray-400 hover:text-gray-600"
+                          )}
+                        >
+                          Date {outgoingSortField === 'target_date' && <ArrowUpDown size={10} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {outgoingProposals.map(prop => (
+                    {sortedOutgoingProposals.map(prop => (
                       <div key={prop.id} className="bg-white p-4 rounded-2xl shadow-sm border border-black/5 opacity-80">
                         <div className="flex items-center justify-between mb-3">
                           <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Proposal Status</span>
@@ -1034,11 +1131,13 @@ export default function App() {
                         <div className="flex items-center justify-between gap-2 text-xs">
                           <div className="text-center flex-1">
                             <div className="font-bold">{prop.offered_code}</div>
+                            {prop.offered_ret_code && <div className="text-[10px] text-blue-600 font-bold">{prop.offered_ret_code}</div>}
                             <div className="text-[9px] text-gray-400">Offered</div>
                           </div>
                           <ArrowRightLeft size={12} className="text-gray-300" />
                           <div className="text-center flex-1">
                             <div className="font-bold">{prop.target_code}</div>
+                            {prop.target_ret_code && <div className="text-[10px] text-blue-600 font-bold">{prop.target_ret_code}</div>}
                             <div className="text-[9px] text-gray-400">Target</div>
                           </div>
                         </div>
@@ -1072,9 +1171,16 @@ export default function App() {
                               {swap.requester_email === loginId ? "You" : swap.requester_email}
                             </div>
                           </div>
-                          <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full uppercase tracking-wider">
-                            {swap.flight_code}
-                          </span>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full uppercase tracking-wider">
+                              {swap.flight_code}
+                            </span>
+                            {swap.return_code && (
+                              <span className="text-[9px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                                {swap.return_code}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         
                         <div className="flex items-center justify-between mb-4">
@@ -1106,6 +1212,7 @@ export default function App() {
                               handleCancelSwap(swap.id!);
                             } else {
                               setSelectedListing(swap);
+                              setOfferedFlightId(undefined);
                               setIsProposingSwap(true);
                             }
                           }}
@@ -1263,32 +1370,93 @@ export default function App() {
                     <span className="font-bold">{selectedListing.flight_code}</span>
                     <span className="text-xs text-gray-500">{selectedListing.departure_city} → {selectedListing.arrival_city}</span>
                   </div>
+                  {selectedListing.return_code && (
+                    <div className="flex items-center justify-between mt-1 pt-1 border-t border-black/5">
+                      <span className="font-bold">{selectedListing.return_code}</span>
+                      <span className="text-xs text-gray-500">{selectedListing.return_dep} → {selectedListing.return_arr}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold uppercase tracking-widest text-gray-400 mb-3">Offer one of your flights</label>
-                  <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-                    {flights.length === 0 ? (
-                      <p className="text-xs text-gray-400 text-center py-4">No flights in your schedule to offer.</p>
-                    ) : (
-                      flights.map(f => (
-                        <button 
-                          key={f.id}
-                          onClick={() => setOfferedFlightId(f.id!)}
-                          className={cn(
-                            "w-full p-3 rounded-xl border text-left transition-all flex items-center justify-between",
-                            offeredFlightId === f.id 
-                              ? "bg-emerald-50 border-emerald-600 ring-2 ring-emerald-500/20" 
-                              : "bg-white border-black/5 hover:border-emerald-200"
-                          )}
-                        >
-                          <div>
-                            <div className="text-sm font-bold">{f.flight_code}</div>
-                            <div className="text-[10px] text-gray-500">{f.departure_city} → {f.arrival_city}</div>
-                          </div>
-                          <div className="text-[10px] font-medium text-gray-400">{format(parseISO(f.date), 'MMM d')}</div>
-                        </button>
-                      ))
+                  <label className="block text-xs font-bold uppercase tracking-widest text-gray-400 mb-3">Offer your flights</label>
+                  <div className="space-y-4">
+                    <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
+                      <button 
+                        onClick={() => {
+                          setOfferedFlightId(null);
+                          setOfferedReturnId(null);
+                        }}
+                        className={cn(
+                          "w-full p-3 rounded-xl border text-left transition-all flex items-center justify-between",
+                          offeredFlightId === null
+                            ? "bg-emerald-50 border-emerald-600 ring-2 ring-emerald-500/20"
+                            : "bg-white border-black/5 hover:border-emerald-200"
+                        )}
+                      >
+                        <div className="text-sm font-bold">Day Off</div>
+                      </button>
+                      {flights.length === 0 ? (
+                        <p className="text-xs text-gray-400 text-center py-4">No flights in your schedule to offer.</p>
+                      ) : (
+                        flights.map(f => (
+                          <button 
+                            key={f.id}
+                            onClick={() => {
+                              setOfferedFlightId(f.id!);
+                              // Auto-find return leg
+                              const returnLeg = flights.find(rl => 
+                                rl.id !== f.id && 
+                                rl.departure_city === f.arrival_city &&
+                                (rl.date === f.date || parseISO(rl.date) > parseISO(f.date))
+                              );
+                              setOfferedReturnId(returnLeg ? returnLeg.id! : null);
+                            }}
+                            className={cn(
+                              "w-full p-3 rounded-xl border text-left transition-all flex items-center justify-between",
+                              offeredFlightId === f.id 
+                                ? "bg-emerald-50 border-emerald-600 ring-2 ring-emerald-500/20" 
+                                : "bg-white border-black/5 hover:border-emerald-200"
+                            )}
+                          >
+                            <div>
+                              <div className="text-sm font-bold">{f.flight_code}</div>
+                              <div className="text-[10px] text-gray-500">{f.departure_city} → {f.arrival_city}</div>
+                            </div>
+                            <div className="text-[10px] font-medium text-gray-400">{format(parseISO(f.date), 'MMM d')}</div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+
+                    {offeredFlightId && (
+                      <div className="pt-4 border-t border-black/5">
+                        <label className="block text-xs font-bold uppercase tracking-widest text-gray-400 mb-3">Return Leg (Optional)</label>
+                        <div className="space-y-2 max-h-32 overflow-y-auto pr-2">
+                          <button 
+                            onClick={() => setOfferedReturnId(null)}
+                            className={cn(
+                              "w-full p-2 rounded-lg border text-left transition-all text-xs",
+                              offeredReturnId === null ? "bg-emerald-50 border-emerald-600" : "bg-white border-black/5"
+                            )}
+                          >
+                            No return leg
+                          </button>
+                          {flights.filter(f => f.id !== offeredFlightId).map(f => (
+                            <button 
+                              key={f.id}
+                              onClick={() => setOfferedReturnId(f.id!)}
+                              className={cn(
+                                "w-full p-2 rounded-lg border text-left transition-all flex items-center justify-between",
+                                offeredReturnId === f.id ? "bg-emerald-50 border-emerald-600" : "bg-white border-black/5"
+                              )}
+                            >
+                              <div className="text-xs font-bold">{f.flight_code} ({f.departure_city} → {f.arrival_city})</div>
+                              <div className="text-[10px] text-gray-400">{format(parseISO(f.date), 'MMM d')}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1303,7 +1471,7 @@ export default function App() {
                 </button>
                 <button 
                   onClick={handleProposeSwap}
-                  disabled={!offeredFlightId}
+                  disabled={offeredFlightId === undefined}
                   className="flex-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-200 disabled:text-gray-400 text-white py-3 rounded-2xl font-semibold flex items-center justify-center gap-2 transition-all shadow-lg active:scale-[0.98]"
                 >
                   Send Proposal
@@ -1403,6 +1571,100 @@ export default function App() {
                     </>
                   )}
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {selectedFlightForDetails && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedFlightForDetails(null)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-[32px] shadow-2xl overflow-hidden"
+            >
+              <div className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h2 className="text-2xl font-bold tracking-tight">{selectedFlightForDetails.flight_code}</h2>
+                    <p className="text-sm text-gray-500">{format(parseISO(selectedFlightForDetails.date), 'EEEE, MMMM do')}</p>
+                  </div>
+                  <button 
+                    onClick={() => setSelectedFlightForDetails(null)}
+                    className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                  >
+                    <X className="w-5 h-5 text-gray-400" />
+                  </button>
+                </div>
+
+                <div className="space-y-8">
+                  <div className="flex items-center justify-between">
+                    <div className="text-center flex-1">
+                      <div className="text-3xl font-bold mb-1">{selectedFlightForDetails.departure_city}</div>
+                      <div className="text-sm text-gray-400 font-medium">{selectedFlightForDetails.departure_time}</div>
+                    </div>
+                    <div className="px-4 flex flex-col items-center">
+                      <div className="w-12 h-[1px] bg-gray-200 relative">
+                        <Plane className="w-4 h-4 text-emerald-500 absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-1" />
+                      </div>
+                    </div>
+                    <div className="text-center flex-1">
+                      <div className="text-3xl font-bold mb-1">{selectedFlightForDetails.arrival_city}</div>
+                      <div className="text-sm text-gray-400 font-medium">{selectedFlightForDetails.arrival_time}</div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-4 rounded-2xl">
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Pilot</div>
+                      <div className="font-bold text-gray-900">{selectedFlightForDetails.pilot || "Not assigned"}</div>
+                    </div>
+                    <div className="bg-gray-50 p-4 rounded-2xl">
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Aircraft</div>
+                      <div className="font-bold text-gray-900">{selectedFlightForDetails.aircraft || "Unknown"}</div>
+                    </div>
+                  </div>
+
+                  {selectedFlightForDetails.layover && (
+                    <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
+                      <div className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest mb-1">Layover Details</div>
+                      <div className="text-sm font-medium text-emerald-900 leading-relaxed">
+                        {selectedFlightForDetails.layover}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-4">
+                    <button 
+                      onClick={() => {
+                        handlePostSwap(selectedFlightForDetails.id!);
+                        setSelectedFlightForDetails(null);
+                      }}
+                      className="flex-1 bg-black text-white py-4 rounded-2xl font-bold hover:bg-gray-800 transition-all active:scale-[0.98]"
+                    >
+                      List for Swap
+                    </button>
+                    <button 
+                      onClick={() => {
+                        if (confirm("Are you sure you want to delete this flight?")) {
+                          handleDeleteFlight(selectedFlightForDetails.id!);
+                          setSelectedFlightForDetails(null);
+                        }
+                      }}
+                      className="p-4 bg-red-50 text-red-600 rounded-2xl hover:bg-red-100 transition-all active:scale-[0.98]"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
               </div>
             </motion.div>
           </div>
