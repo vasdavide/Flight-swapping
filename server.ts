@@ -77,10 +77,11 @@ db.exec(`
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   console.log("Starting server...");
   console.log("NODE_ENV:", process.env.NODE_ENV);
+  console.log("PORT:", PORT);
   console.log("__dirname:", __dirname);
 
   app.use(express.json({ limit: '50mb' }));
