@@ -11,6 +11,7 @@ export interface Flight {
   aircraft?: string;
   layover?: string;
   group_id?: string;
+  is_duty?: boolean;
 }
 
 export interface SwapRequest {
@@ -48,14 +49,17 @@ export interface SwapProposal {
   offered_arr: string;
   offered_date: string;
   offered_ret_code?: string;
+  offered_ret_date?: string;
   my_code?: string;
   my_dep?: string;
   my_arr?: string;
   my_date?: string;
   my_ret_code?: string;
+  my_ret_date?: string;
   target_code?: string;
   target_dep?: string;
   target_arr?: string;
   target_date?: string;
   target_ret_code?: string;
+  target_ret_date?: string;
 }

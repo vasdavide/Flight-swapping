@@ -17,7 +17,9 @@ import {
   LogOut,
   Save,
   FolderOpen,
-  Search
+  Search,
+  CalendarCheck,
+  CheckCircle2
 } from 'lucide-react';
 import { 
   format, 
@@ -42,6 +44,19 @@ import { Flight, SwapRequest, SwapProposal } from './types';
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+const formatDateRange = (dateStr: string, returnDateStr?: string | null) => {
+  if (!dateStr) return '';
+  const date = parseISO(dateStr);
+  if (!returnDateStr || returnDateStr === dateStr) {
+    return format(date, 'MMM d').toUpperCase();
+  }
+  const returnDate = parseISO(returnDateStr);
+  if (format(date, 'MMM') === format(returnDate, 'MMM')) {
+    return `${format(date, 'MMM d')}-${format(returnDate, 'd')}`.toUpperCase();
+  }
+  return `${format(date, 'MMM d')}-${format(returnDate, 'MMM d')}`.toUpperCase();
+};
 
 class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: any}> {
   constructor(props: any) {
@@ -84,7 +99,8 @@ export default function App() {
   console.log("App component initializing...");
   const [loginId, setLoginId] = useState<string>(() => {
     try {
-      return localStorage.getItem('skycrew_login_id') || '';
+      const saved = localStorage.getItem('skycrew_login_id');
+      return saved ? saved.trim() : '';
     } catch (e) {
       console.warn("LocalStorage access failed", e);
       return '';
@@ -132,17 +148,22 @@ export default function App() {
   const [offeredFlightId, setOfferedFlightId] = useState<number | null | undefined>(undefined);
   const [offeredReturnId, setOfferedReturnId] = useState<number | null>(null);
   const [flightCode, setFlightCode] = useState('');
+  const [returnFlightCode, setReturnFlightCode] = useState('');
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [returnDate, setReturnDate] = useState<Date | null>(null);
+  const [isSameDayReturn, setIsSameDayReturn] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'calendar' | 'swaps' | 'profile'>('calendar');
   const [isScanning, setIsScanning] = useState(false);
+  const [annualLeaves, setAnnualLeaves] = useState<string[]>([]);
+  const [availableCrew, setAvailableCrew] = useState<any[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Modals state
   const [flightToDelete, setFlightToDelete] = useState<number | null>(null);
   const [isClearingAll, setIsClearingAll] = useState(false);
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
-  const [candidatesModal, setCandidatesModal] = useState<{isOpen: boolean, date: string, flightCode: string, candidates: string[]}>({isOpen: false, date: '', flightCode: '', candidates: []});
+  const [candidatesModal, setCandidatesModal] = useState<{isOpen: boolean, date: string, flightCode: string, candidates: {email: string, is_al: boolean}[]}>({isOpen: false, date: '', flightCode: '', candidates: []});
 
   // Image Editing State
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -153,8 +174,8 @@ export default function App() {
     if (!loginId) return;
     try {
       const [incoming, outgoing] = await Promise.all([
-        fetch(`/api/proposals/incoming?email=${loginId}`).then(r => r.json()),
-        fetch(`/api/proposals/outgoing?email=${loginId}`).then(r => r.json())
+        fetch(`/api/proposals/incoming?email=${encodeURIComponent(loginId)}`).then(r => r.json()),
+        fetch(`/api/proposals/outgoing?email=${encodeURIComponent(loginId)}`).then(r => r.json())
       ]);
       setIncomingProposals(incoming);
       setOutgoingProposals(outgoing);
@@ -166,22 +187,41 @@ export default function App() {
   const fetchFlights = async () => {
     if (!loginId) return;
     try {
-      const res = await fetch(`/api/flights?email=${loginId}`);
+      const res = await fetch(`/api/flights?email=${encodeURIComponent(loginId)}`);
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
+      }
       const serverFlights = await res.json();
       setFlights(serverFlights);
     } catch (err) {
       console.error("Failed to fetch flights", err);
+      if (err instanceof Error) {
+        setAlertMessage(`Failed to fetch flights: ${err.message}`);
+      }
     }
   };
 
   const fetchSwaps = async () => {
+    try {
+      const [swapsRes, crewRes] = await Promise.all([
+        fetch('/api/swaps').then(r => r.json()),
+        fetch('/api/available-crew').then(r => r.json())
+      ]);
+      setSwaps(swapsRes);
+      setAvailableCrew(crewRes);
+    } catch (err) {
+      console.error("Failed to fetch swaps/crew", err);
+    }
+  };
+
+  const fetchAnnualLeaves = async () => {
     if (!loginId) return;
     try {
-      const res = await fetch('/api/swaps');
+      const res = await fetch(`/api/annual-leaves?email=${encodeURIComponent(loginId)}`);
       const data = await res.json();
-      setSwaps(data);
+      setAnnualLeaves(data);
     } catch (err) {
-      console.error("Failed to fetch swaps", err);
+      console.error("Failed to fetch annual leaves", err);
     }
   };
 
@@ -190,13 +230,33 @@ export default function App() {
       fetchFlights();
       fetchSwaps();
       fetchProposals();
+      fetchAnnualLeaves();
     }
   }, [loginId]);
 
+  const handleToggleAL = async (date: string) => {
+    if (!loginId) return;
+    try {
+      const res = await fetch('/api/annual-leaves/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginId, date })
+      });
+      if (res.ok) {
+        fetchAnnualLeaves();
+        fetchSwaps(); // Refresh available crew on board
+      }
+    } catch (err) {
+      console.error("Failed to toggle AL", err);
+    }
+  };
   const handleFindCandidates = async (date: string, flightCode: string) => {
     if (!loginId) return;
     try {
-      const res = await fetch(`/api/candidates?date=${date}&email=${loginId}`);
+      const res = await fetch(`/api/candidates?date=${date}&email=${encodeURIComponent(loginId)}`);
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
+      }
       const candidates = await res.json();
       setCandidatesModal({ isOpen: true, date, flightCode, candidates });
     } catch (err) {
@@ -284,106 +344,103 @@ export default function App() {
   const handleAddFlight = async () => {
     if (!flightCode || !selectedDate) return;
     
-    const dateString = format(selectedDate, 'yyyy-MM-dd');
-    const codes = flightCode.split('/').map(c => c.trim());
+    const depDateStr = format(selectedDate, 'yyyy-MM-dd');
+    const retDateStr = isSameDayReturn ? depDateStr : (returnDate ? format(returnDate, 'yyyy-MM-dd') : depDateStr);
     
-    // Simple logic: if ci100/1, add ci100 and ci101. If ci100/101, add ci100 and ci101.
-    const flightCodes: string[] = [];
-    if (codes.length === 2 && /^\d+$/.test(codes[1])) {
-      const base = codes[0].replace(/\d+$/, '');
-      const num = parseInt(codes[0].match(/\d+$/)?.[0] || '0');
-      
-      flightCodes.push(codes[0].toUpperCase());
-      
-      if (parseInt(codes[1]) > num) {
-        // Treat as full number
-        flightCodes.push(`${base}${codes[1]}`.toUpperCase());
-      } else {
-        // Treat as offset
-        flightCodes.push(`${base}${num + parseInt(codes[1])}`.toUpperCase());
-      }
-    } else {
-      flightCodes.push(...codes.map(c => c.toUpperCase()));
-    }
-    
-    const isDuplicate = flights.some(f => f.date === dateString && flightCodes.includes(f.flight_code.toUpperCase()));
-    
-    if (isDuplicate) {
-      setAlertMessage(`One of the flights already exists on ${dateString}.`);
-      return;
-    }
-
     setIsLoading(true);
     try {
       const groupId = Date.now().toString();
-      for (const code of flightCodes) {
-        let details: any = {};
+      
+      // 1. Add departing flight
+      let depDetails: any = {};
+      try {
+        depDetails = await parseFlight(flightCode, depDateStr);
+      } catch (err) {
+        console.warn("Failed to parse departing flight", err);
+      }
+
+      const depFlight: Flight = {
+        user_email: loginId,
+        flight_code: flightCode.toUpperCase(),
+        date: depDateStr,
+        group_id: groupId,
+        departure_city: depDetails.departure_city || 'Unknown',
+        arrival_city: depDetails.arrival_city || 'Unknown',
+        departure_time: depDetails.departure_time || '00:00',
+        arrival_time: depDetails.arrival_time || '00:00',
+        ...depDetails
+      };
+
+      await fetch('/api/flights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(depFlight)
+      });
+
+      // 2. Add return flight if provided
+      if (returnFlightCode) {
+        let retDetails: any = {};
         try {
-          details = await parseFlight(code, dateString);
+          retDetails = await parseFlight(returnFlightCode, retDateStr);
         } catch (err) {
-          console.warn("Failed to parse flight, using raw code", err);
+          console.warn("Failed to parse return flight", err);
         }
 
-        const newFlight: Flight = {
+        const retFlight: Flight = {
           user_email: loginId,
-          flight_code: code.toUpperCase(),
-          date: dateString,
+          flight_code: returnFlightCode.toUpperCase(),
+          date: retDateStr,
           group_id: groupId,
-          departure_city: details.departure_city || 'Unknown',
-          arrival_city: details.arrival_city || 'Unknown',
-          departure_time: details.departure_time || '00:00',
-          arrival_time: details.arrival_time || '00:00',
-          ...details
+          departure_city: retDetails.departure_city || 'Unknown',
+          arrival_city: retDetails.arrival_city || 'Unknown',
+          departure_time: retDetails.departure_time || '00:00',
+          arrival_time: retDetails.arrival_time || '00:00',
+          ...retDetails
         };
 
         await fetch('/api/flights', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newFlight)
+          body: JSON.stringify(retFlight)
         });
+      }
+
+      // 3. Handle blocking days (Duty)
+      if (!isSameDayReturn && returnDate && selectedDate) {
+        let current = addDays(selectedDate, 1);
+        const actualReturnDate = returnDate;
+        while (format(current, 'yyyy-MM-dd') < format(actualReturnDate, 'yyyy-MM-dd')) {
+          const dutyDateStr = format(current, 'yyyy-MM-dd');
+          const dutyEntry: Flight = {
+            user_email: loginId,
+            flight_code: 'ON DUTY',
+            date: dutyDateStr,
+            group_id: groupId,
+            departure_city: 'N/A',
+            arrival_city: 'N/A',
+            departure_time: '00:00',
+            arrival_time: '23:59',
+            is_duty: true
+          };
+          await fetch('/api/flights', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dutyEntry)
+          });
+          current = addDays(current, 1);
+        }
       }
 
       await fetchFlights();
       setIsAddingFlight(false);
       setFlightCode('');
+      setReturnFlightCode('');
       setSelectedDate(null);
+      setReturnDate(null);
+      setIsSameDayReturn(true);
     } catch (err: any) {
       console.error("Failed to add flight", err);
-      
-      if (err.message === "GEMINI_API_KEY_MISSING") {
-        setAlertMessage("Gemini API Key is missing. Please replace 'AI studio free tier' with an actual API key string (AIza...) in the project settings.");
-        return;
-      }
-
-      const errorMessage = err.message || "Unknown error";
-
-      // Fallback: Add flight with blank details if AI parsing fails
-      try {
-        const fallbackFlight: Flight = {
-          user_email: loginId,
-          flight_code: flightCode.toUpperCase(),
-          date: dateString,
-          departure_city: '',
-          arrival_city: '',
-          departure_time: '',
-          arrival_time: ''
-        };
-
-        await fetch('/api/flights', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(fallbackFlight)
-        });
-
-        await fetchFlights();
-        setIsAddingFlight(false);
-        setFlightCode('');
-        setSelectedDate(null);
-        setAlertMessage(`Flight added with blank details. (Reason: ${errorMessage})`);
-      } catch (fallbackErr) {
-        console.error("Fallback add failed", fallbackErr);
-        setAlertMessage("Failed to add flight. Please check your connection.");
-      }
+      setAlertMessage("Failed to add flight. Please check your connection.");
     } finally {
       setIsLoading(false);
     }
@@ -683,7 +740,7 @@ export default function App() {
                 try {
                   const importedFlights = JSON.parse(localDriveData);
                   // Check if server is empty before restoring to avoid duplicates
-                  const res = await fetch(`/api/flights?email=${email}`);
+                  const res = await fetch(`/api/flights?email=${encodeURIComponent(email)}`);
                   const serverFlights = await res.json();
                   
                   if (serverFlights.length === 0 && importedFlights.length > 0) {
@@ -758,11 +815,25 @@ export default function App() {
                     No available candidates found for this date.
                   </div>
                 ) : (
-                  candidatesModal.candidates.map(email => (
-                    <div key={email} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
-                      <span className="text-sm font-medium">{email}</span>
+                  candidatesModal.candidates.map(candidate => (
+                    <div key={candidate.email} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold",
+                          candidate.is_al ? "bg-emerald-100 text-emerald-600" : "bg-gray-200 text-gray-500"
+                        )}>
+                          {candidate.email.substring(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold flex items-center gap-1">
+                            {candidate.email}
+                            {candidate.is_al && <CalendarCheck size={10} className="text-emerald-600" />}
+                          </div>
+                          {candidate.is_al && <div className="text-[9px] text-emerald-600 font-medium uppercase tracking-wider">On Annual Leave</div>}
+                        </div>
+                      </div>
                       <a 
-                        href={`mailto:${email}?subject=Flight Swap Request: ${candidatesModal.flightCode} on ${format(parseISO(candidatesModal.date), 'MMM d')}&body=Hi,%0D%0A%0D%0AI saw you are off on ${format(parseISO(candidatesModal.date), 'MMM d')}. Would you be interested in taking my flight ${candidatesModal.flightCode}?%0D%0A%0D%0AThanks!`}
+                        href={`mailto:${candidate.email}?subject=Flight Swap Request: ${candidatesModal.flightCode} on ${format(parseISO(candidatesModal.date), 'MMM d')}&body=Hi,%0D%0A%0D%0AI saw you are ${candidate.is_al ? 'on annual leave' : 'off'} on ${format(parseISO(candidatesModal.date), 'MMM d')}. Would you be interested in taking my flight ${candidatesModal.flightCode}?%0D%0A%0D%0AThanks!`}
                         className="text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
                       >
                         Email
@@ -956,6 +1027,7 @@ export default function App() {
                     const dateStr = format(day, 'yyyy-MM-dd');
                     const dayFlights = flightsByDate[dateStr] || [];
                     const isCurrentMonth = isSameMonth(day, monthStart);
+                    const isAL = annualLeaves.includes(dateStr);
                     
                     return (
                       <div 
@@ -966,23 +1038,68 @@ export default function App() {
                         }}
                         className={cn(
                           "min-h-[140px] p-2 border-r border-b border-black/5 last:border-r-0 relative group cursor-pointer hover:bg-gray-50/80 transition-colors",
-                          !isCurrentMonth && "bg-gray-50/50"
+                          !isCurrentMonth && "bg-gray-50/50",
+                          isAL && "bg-emerald-50/30"
                         )}
                       >
-                        <span className={cn(
-                          "text-sm font-medium",
-                          !isCurrentMonth ? "text-gray-300" : "text-gray-500",
-                          isSameDay(day, new Date()) && "bg-emerald-600 text-white w-6 h-6 flex items-center justify-center rounded-full"
-                        )}>
-                          {format(day, 'd')}
-                        </span>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className={cn(
+                            "text-sm font-medium",
+                            !isCurrentMonth ? "text-gray-300" : "text-gray-500",
+                            isSameDay(day, new Date()) && "bg-emerald-600 text-white w-6 h-6 flex items-center justify-center rounded-full"
+                          )}>
+                            {format(day, 'd')}
+                          </span>
+                          {dayFlights.length === 0 && isCurrentMonth && (
+                            <button 
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleAL(dateStr);
+                              }}
+                              className={cn(
+                                "p-1.5 rounded-lg transition-all border shadow-sm",
+                                isAL 
+                                  ? "text-blue-600 bg-blue-50 border-blue-300" 
+                                  : "text-slate-500 bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+                              )}
+                              title={isAL ? "On Annual Leave" : "Mark as Annual Leave"}
+                            >
+                              {isAL ? <CalendarCheck size={16} /> : <CheckCircle2 size={16} />}
+                            </button>
+                          )}
+                        </div>
                         
-                        <div className="mt-2 space-y-1">
+                        <div className="space-y-1">
+                          {isAL && dayFlights.length === 0 && (
+                            <div className="bg-blue-100/50 border border-blue-200 text-blue-700 p-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                              <CalendarCheck size={10} />
+                              Annual Leave
+                            </div>
+                          )}
                           {dayFlights.map(f => {
                             const isListed = swaps.some(s => 
                               (s.flight_id === f.id) || 
                               (f.group_id && s.group_id === f.group_id)
                             );
+
+                            if (f.is_duty || f.flight_code === 'ON DUTY') {
+                              return (
+                                <div 
+                                  key={f.id}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="bg-gray-100 border border-gray-200 text-gray-400 p-2 rounded-lg text-[10px] flex items-center justify-between group/duty"
+                                >
+                                  <span className="font-bold tracking-widest uppercase opacity-60">On Duty</span>
+                                  <button 
+                                    onClick={(e) => { e.stopPropagation(); handleDeleteFlight(f.id!); }}
+                                    className="opacity-0 group-hover/duty:opacity-100 text-gray-400 hover:text-red-600 transition-all"
+                                  >
+                                    <X size={10} />
+                                  </button>
+                                </div>
+                              );
+                            }
+
                             return (
                             <div 
                               key={f.id} 
@@ -1090,12 +1207,12 @@ export default function App() {
                         </div>
                         <div className="space-y-1 text-xs mb-4 p-2 bg-gray-50 rounded-lg">
                           <div className="flex justify-between">
-                            <span className="text-gray-400">Route</span>
-                            <span className="font-medium">{prop.offered_dep} → {prop.offered_arr}</span>
+                            <span className="text-gray-400">Your Flight</span>
+                            <span className="font-medium">{formatDateRange(prop.my_date!, prop.my_ret_date)}</span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-gray-400">Date</span>
-                            <span className="font-medium">{format(parseISO(prop.offered_date), 'MMM d')}</span>
+                            <span className="text-gray-400">Their Offer</span>
+                            <span className="font-medium">{formatDateRange(prop.offered_date, prop.offered_ret_date)}</span>
                           </div>
                         </div>
                         <div className="flex gap-2">
@@ -1203,6 +1320,48 @@ export default function App() {
                             <div className="text-[9px] text-gray-400">Target</div>
                           </div>
                         </div>
+                        <div className="mt-3 pt-3 border-t border-black/5 flex justify-between items-center text-[9px]">
+                          <div className="text-gray-400">Offered: <span className="text-gray-600 font-medium">{formatDateRange(prop.offered_date, prop.offered_ret_date)}</span></div>
+                          <div className="text-gray-400">Target: <span className="text-gray-600 font-medium">{formatDateRange(prop.target_date!, prop.target_ret_date)}</span></div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Available Crew Section */}
+              {availableCrew.length > 0 && (
+                <section className="space-y-4">
+                  <div className="flex items-center gap-2 text-blue-600">
+                    <User size={20} />
+                    <h3 className="text-lg font-semibold">Crew Available for Swaps</h3>
+                  </div>
+                  <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
+                    {availableCrew.map((crew, idx) => (
+                      <div key={idx} className="flex-shrink-0 bg-white p-4 rounded-2xl shadow-sm border border-blue-100 w-64">
+                        <div className="flex items-center gap-3 mb-3">
+                          <div className="w-10 h-10 bg-blue-50 rounded-full flex items-center justify-center text-blue-600 font-bold text-xs">
+                            {crew.user_email.substring(0, 2).toUpperCase()}
+                          </div>
+                          <div>
+                            <div className="text-xs font-bold text-gray-900 truncate w-32">{crew.user_email}</div>
+                            <div className="text-[10px] text-blue-600 font-medium">On Annual Leave</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-gray-400">Available on</span>
+                          <span className="font-bold">{format(parseISO(crew.date), 'MMM d, yyyy')}</span>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            // Open a mailto or some contact method
+                            window.location.href = `mailto:${crew.user_email}?subject=Swap Request for ${format(parseISO(crew.date), 'MMM d')}&body=Hi, I saw you are available on ${format(parseISO(crew.date), 'MMM d')}. Would you be interested in taking one of my flights?`;
+                          }}
+                          className="w-full mt-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:bg-blue-700 transition-colors"
+                        >
+                          Contact Crew
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1299,7 +1458,7 @@ export default function App() {
                         <div className="space-y-2 border-t border-black/5 pt-4">
                           <div className="flex justify-between text-sm">
                             <span className="text-gray-400">Date</span>
-                            <span className="font-medium">{format(parseISO(swap.date), 'MMM d, yyyy')}</span>
+                            <span className="font-medium">{formatDateRange(swap.date, swap.return_date)}</span>
                           </div>
                           <div className="flex justify-between text-sm">
                             <span className="text-gray-400">Time</span>
@@ -1469,8 +1628,9 @@ export default function App() {
                   <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Target Flight</div>
                   <div className="flex items-center justify-between">
                     <span className="font-bold">{selectedListing.flight_code}</span>
-                    <span className="text-xs text-gray-500">{selectedListing.departure_city} → {selectedListing.arrival_city}</span>
+                    <span className="text-xs font-medium text-emerald-600">{formatDateRange(selectedListing.date, selectedListing.return_date)}</span>
                   </div>
+                  <div className="text-[10px] text-gray-500 mt-0.5">{selectedListing.departure_city} → {selectedListing.arrival_city}</div>
                   {selectedListing.return_code && (
                     <div className="flex items-center justify-between mt-1 pt-1 border-t border-black/5">
                       <span className="font-bold">{selectedListing.return_code}</span>
@@ -1524,7 +1684,17 @@ export default function App() {
                               <div className="text-sm font-bold">{f.flight_code}</div>
                               <div className="text-[10px] text-gray-500">{f.departure_city} → {f.arrival_city}</div>
                             </div>
-                            <div className="text-[10px] font-medium text-gray-400">{format(parseISO(f.date), 'MMM d')}</div>
+                            <div className="text-[10px] font-medium text-gray-400">
+                              {f.group_id ? (
+                                (() => {
+                                  const group = flights.filter(gf => gf.group_id === f.group_id).sort((a, b) => a.date.localeCompare(b.date));
+                                  if (group.length > 1) {
+                                    return formatDateRange(group[0].date, group[group.length - 1].date);
+                                  }
+                                  return formatDateRange(f.date);
+                                })()
+                              ) : formatDateRange(f.date)}
+                            </div>
                           </button>
                         ))
                       )}
@@ -1553,7 +1723,7 @@ export default function App() {
                               )}
                             >
                               <div className="text-xs font-bold">{f.flight_code} ({f.departure_city} → {f.arrival_city})</div>
-                              <div className="text-[10px] text-gray-400">{format(parseISO(f.date), 'MMM d')}</div>
+                              <div className="text-[10px] text-gray-400">{formatDateRange(f.date)}</div>
                             </button>
                           ))}
                         </div>
@@ -1596,59 +1766,98 @@ export default function App() {
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white w-full max-w-md rounded-3xl shadow-2xl relative z-10 overflow-hidden"
+              className="bg-white w-full max-w-lg rounded-3xl shadow-2xl relative z-10 overflow-hidden max-h-[90vh] overflow-y-auto"
             >
-              <div className="p-6 border-b border-black/5 flex items-center justify-between">
-                <h3 className="text-xl font-semibold">Add New Flight</h3>
+              <div className="p-6 border-b border-black/5 flex items-center justify-between sticky top-0 bg-white z-10">
+                <h3 className="text-xl font-semibold">Add Flight Pair</h3>
                 <button onClick={() => setIsAddingFlight(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
                   <X size={20} />
                 </button>
               </div>
               
-              <div className="p-6 space-y-6">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">Flight Code</label>
-                  <div className="relative">
-                    <Plane className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-300" size={20} />
-                    <input 
-                      type="text" 
-                      value={flightCode}
-                      onChange={(e) => setFlightCode(e.target.value)}
-                      placeholder="e.g. AA123, BA456"
-                      className="w-full pl-12 pr-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                    />
+              <div className="p-6 space-y-8">
+                {/* Departing Flight */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 text-emerald-600">
+                    <Plane size={18} />
+                    <span className="text-sm font-bold uppercase tracking-widest">Departing Flight</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Flight Code</label>
+                      <input 
+                        type="text" 
+                        value={flightCode}
+                        onChange={(e) => setFlightCode(e.target.value)}
+                        placeholder="e.g. CI100"
+                        className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Departure Date</label>
+                      <input 
+                        type="date" 
+                        value={selectedDate ? format(selectedDate, 'yyyy-MM-dd') : ''}
+                        onChange={(e) => setSelectedDate(e.target.value ? parseISO(e.target.value) : null)}
+                        className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-widest text-gray-400 mb-2">Select Date</label>
-                  <div className="grid grid-cols-7 gap-1">
-                    {/* Simple date picker for current month */}
-                    {eachDayOfInterval({ start: monthStart, end: monthEnd }).map(day => (
-                      <button 
-                        key={day.toISOString()}
-                        onClick={() => setSelectedDate(day)}
-                        className={cn(
-                          "h-10 rounded-lg text-xs font-medium transition-all",
-                          selectedDate && isSameDay(day, selectedDate) 
-                            ? "bg-emerald-600 text-white shadow-md scale-110" 
-                            : "hover:bg-gray-100 text-gray-600"
-                        )}
-                      >
-                        {format(day, 'd')}
-                      </button>
-                    ))}
+                <div className="h-[1px] bg-gray-100" />
+
+                {/* Return Flight */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-blue-600">
+                      <Plane size={18} className="rotate-180" />
+                      <span className="text-sm font-bold uppercase tracking-widest">Return Flight</span>
+                    </div>
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <input 
+                        type="checkbox" 
+                        checked={isSameDayReturn}
+                        onChange={(e) => setIsSameDayReturn(e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span className="text-xs font-medium text-gray-500 group-hover:text-gray-700">Same day return</span>
+                    </label>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Flight Code</label>
+                      <input 
+                        type="text" 
+                        value={returnFlightCode}
+                        onChange={(e) => setReturnFlightCode(e.target.value)}
+                        placeholder="e.g. CI101"
+                        className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                      />
+                    </div>
+                    {!isSameDayReturn && (
+                      <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Return Date</label>
+                        <input 
+                          type="date" 
+                          value={returnDate ? format(returnDate, 'yyyy-MM-dd') : ''}
+                          onChange={(e) => setReturnDate(e.target.value ? parseISO(e.target.value) : null)}
+                          className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
 
                 <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
                   <p className="text-xs text-emerald-700 leading-relaxed">
-                    <strong>Tip:</strong> Just enter the code. Our AI will automatically fetch the route and schedule for you.
+                    <strong>Note:</strong> Days between departure and return will be automatically blocked as "ON DUTY".
                   </p>
                 </div>
               </div>
 
-              <div className="p-6 bg-gray-50 flex gap-3">
+              <div className="p-6 bg-gray-50 flex gap-3 sticky bottom-0 border-t border-black/5">
                 <button 
                   onClick={() => setIsAddingFlight(false)}
                   className="flex-1 py-3 rounded-2xl font-semibold text-gray-500 hover:bg-gray-100 transition-colors"
@@ -1663,12 +1872,12 @@ export default function App() {
                   {isLoading ? (
                     <>
                       <Loader2 className="animate-spin" size={20} />
-                      Parsing...
+                      Adding...
                     </>
                   ) : (
                     <>
                       <Sparkles size={20} />
-                      Add to Schedule
+                      Add Flights
                     </>
                   )}
                 </button>

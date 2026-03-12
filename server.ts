@@ -27,6 +27,7 @@ addColumnIfNotExists("flights", "pilot", "TEXT");
 addColumnIfNotExists("flights", "aircraft", "TEXT");
 addColumnIfNotExists("flights", "layover", "TEXT");
 addColumnIfNotExists("flights", "group_id", "TEXT");
+addColumnIfNotExists("flights", "is_duty", "INTEGER DEFAULT 0");
 addColumnIfNotExists("swap_requests", "return_flight_id", "INTEGER");
 addColumnIfNotExists("swap_requests", "group_id", "TEXT");
 addColumnIfNotExists("swap_proposals", "proposer_flight_id_return", "INTEGER");
@@ -47,7 +48,9 @@ db.exec(`
     date TEXT,
     pilot TEXT,
     aircraft TEXT,
-    layover TEXT
+    layover TEXT,
+    group_id TEXT,
+    is_duty INTEGER DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS swap_requests (
@@ -72,6 +75,14 @@ db.exec(`
     FOREIGN KEY(listing_id) REFERENCES swap_requests(id),
     FOREIGN KEY(proposer_flight_id) REFERENCES flights(id),
     FOREIGN KEY(proposer_flight_id_return) REFERENCES flights(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS annual_leaves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email TEXT,
+    date TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_email, date)
   );
 `);
 
@@ -100,11 +111,11 @@ async function startServer() {
   });
 
   app.post("/api/flights", (req, res) => {
-    const { user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover, group_id } = req.body;
+    const { user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover, group_id, is_duty } = req.body;
     const info = db.prepare(`
-      INSERT INTO flights (user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover, group_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover, group_id);
+      INSERT INTO flights (user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover, group_id, is_duty)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(user_email, flight_code, departure_city, arrival_city, departure_time, arrival_time, date, pilot, aircraft, layover, group_id, is_duty ? 1 : 0);
     res.json({ id: info.lastInsertRowid });
   });
 
@@ -173,9 +184,9 @@ async function startServer() {
     const proposals = db.prepare(`
       SELECT sp.*, 
              f_offered.flight_code as offered_code, f_offered.departure_city as offered_dep, f_offered.arrival_city as offered_arr, f_offered.date as offered_date,
-             f_offered_ret.flight_code as offered_ret_code,
+             f_offered_ret.flight_code as offered_ret_code, f_offered_ret.date as offered_ret_date,
              f_mine.flight_code as my_code, f_mine.departure_city as my_dep, f_mine.arrival_city as my_arr, f_mine.date as my_date,
-             f_mine_ret.flight_code as my_ret_code
+             f_mine_ret.flight_code as my_ret_code, f_mine_ret.date as my_ret_date
       FROM swap_proposals sp
       JOIN swap_requests sr ON sp.listing_id = sr.id
       JOIN flights f_mine ON sr.flight_id = f_mine.id
@@ -192,9 +203,9 @@ async function startServer() {
     const proposals = db.prepare(`
       SELECT sp.*, 
              f_offered.flight_code as offered_code, f_offered.departure_city as offered_dep, f_offered.arrival_city as offered_arr, f_offered.date as offered_date,
-             f_offered_ret.flight_code as offered_ret_code,
+             f_offered_ret.flight_code as offered_ret_code, f_offered_ret.date as offered_ret_date,
              f_target.flight_code as target_code, f_target.departure_city as target_dep, f_target.arrival_city as target_arr, f_target.date as target_date,
-             f_target_ret.flight_code as target_ret_code
+             f_target_ret.flight_code as target_ret_code, f_target_ret.date as target_ret_date
       FROM swap_proposals sp
       JOIN swap_requests sr ON sp.listing_id = sr.id
       JOIN flights f_target ON sr.flight_id = f_target.id
@@ -214,16 +225,52 @@ async function startServer() {
       return res.status(400).json({ error: "Missing date or email" });
     }
 
+    // Candidates are people who are either on Annual Leave OR just happen to be off
     const candidates = db.prepare(`
-      SELECT DISTINCT user_email 
-      FROM flights 
+      SELECT DISTINCT user_email, 
+             (SELECT 1 FROM annual_leaves al WHERE al.user_email = f.user_email AND al.date = ?) as is_al
+      FROM flights f
       WHERE user_email != ? 
       AND user_email NOT IN (
         SELECT user_email FROM flights WHERE date = ?
       )
-    `).all(email, date);
+    `).all(date, email, date);
     
-    res.json(candidates.map((c: any) => c.user_email));
+    res.json(candidates.map((c: any) => ({
+      email: c.user_email,
+      is_al: !!c.is_al
+    })));
+  });
+
+  app.get("/api/annual-leaves", (req, res) => {
+    const email = req.query.email as string;
+    const leaves = db.prepare("SELECT date FROM annual_leaves WHERE user_email = ?").all(email);
+    res.json(leaves.map((l: any) => l.date));
+  });
+
+  app.post("/api/annual-leaves/toggle", (req, res) => {
+    const { email, date } = req.body;
+    const existing = db.prepare("SELECT id FROM annual_leaves WHERE user_email = ? AND date = ?").get(email, date);
+    
+    if (existing) {
+      db.prepare("DELETE FROM annual_leaves WHERE user_email = ? AND date = ?").run(email, date);
+      res.json({ status: 'removed' });
+    } else {
+      db.prepare("INSERT INTO annual_leaves (user_email, date) VALUES (?, ?)").run(email, date);
+      res.json({ status: 'added' });
+    }
+  });
+
+  app.get("/api/available-crew", (req, res) => {
+    const crew = db.prepare(`
+      SELECT al.*, 
+             (SELECT COUNT(*) FROM flights f WHERE f.user_email = al.user_email AND f.date = al.date) as has_flight
+      FROM annual_leaves al
+      WHERE al.date >= date('now')
+      ORDER BY al.date ASC
+    `).all();
+    // Filter out those who might have added a flight later (though AL usually means they are off)
+    res.json(crew.filter((c: any) => c.has_flight === 0));
   });
 
   // End of API Routes
