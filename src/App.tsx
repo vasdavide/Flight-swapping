@@ -208,8 +208,16 @@ export default function App() {
     if (!loginId) return;
     try {
       const [incoming, outgoing] = await Promise.all([
-        fetch(`/api/proposals/incoming?email=${encodeURIComponent(loginId)}`).then(r => r.json()),
-        fetch(`/api/proposals/outgoing?email=${encodeURIComponent(loginId)}`).then(r => r.json())
+        fetch(`/api/proposals/incoming?email=${encodeURIComponent(loginId)}`).then(async r => {
+          if (!r.ok) throw new Error(`Incoming proposals failed: ${r.status}`);
+          const data = await r.json();
+          return Array.isArray(data) ? data : [];
+        }),
+        fetch(`/api/proposals/outgoing?email=${encodeURIComponent(loginId)}`).then(async r => {
+          if (!r.ok) throw new Error(`Outgoing proposals failed: ${r.status}`);
+          const data = await r.json();
+          return Array.isArray(data) ? data : [];
+        })
       ]);
       setIncomingProposals(incoming);
       setOutgoingProposals(outgoing);
@@ -226,7 +234,12 @@ export default function App() {
         throw new Error(`Server returned ${res.status}: ${res.statusText}`);
       }
       const serverFlights = await res.json();
-      setFlights(serverFlights);
+      if (Array.isArray(serverFlights)) {
+        setFlights(serverFlights);
+      } else {
+        console.error("Flights data is not an array", serverFlights);
+        setFlights([]);
+      }
     } catch (err) {
       console.error("Failed to fetch flights", err);
       if (err instanceof Error) {
@@ -261,8 +274,16 @@ export default function App() {
   const fetchSwaps = async () => {
     try {
       const [swapsRes, crewRes] = await Promise.all([
-        fetch('/api/swaps').then(r => r.json()),
-        fetch('/api/available-crew').then(r => r.json())
+        fetch('/api/swaps').then(async r => {
+          if (!r.ok) throw new Error(`Swaps fetch failed: ${r.status}`);
+          const data = await r.json();
+          return Array.isArray(data) ? data : [];
+        }),
+        fetch('/api/available-crew').then(async r => {
+          if (!r.ok) throw new Error(`Crew fetch failed: ${r.status}`);
+          const data = await r.json();
+          return Array.isArray(data) ? data : [];
+        })
       ]);
       setSwaps(swapsRes);
       setAvailableCrew(crewRes);
@@ -276,8 +297,13 @@ export default function App() {
     if (!loginId) return;
     try {
       const res = await fetch(`/api/annual-leaves?email=${encodeURIComponent(loginId)}`);
+      if (!res.ok) throw new Error(`Annual leaves fetch failed: ${res.status}`);
       const data = await res.json();
-      setAnnualLeaves(data);
+      if (Array.isArray(data)) {
+        setAnnualLeaves(data);
+      } else {
+        setAnnualLeaves([]);
+      }
     } catch (err) {
       console.error("Failed to fetch annual leaves", err);
     }
