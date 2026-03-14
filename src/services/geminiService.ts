@@ -92,12 +92,29 @@ export async function parseFlight(flightCode: string, dateString: string) {
 export async function scanSchedule(base64Data: string, mimeType: string) {
   const ai = getAI();
   try {
-    console.log(`[scanSchedule] Scanning schedule image with gemini-3-flash-preview...`);
+    console.log(`[scanSchedule] Scanning schedule image with gemini-3.1-pro-preview...`);
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.1-pro-preview",
       contents: [
         { inlineData: { data: base64Data, mimeType } },
-        { text: "Extract all schedule entries from this image. For each day, identify if it's a flight or a day off (OFF/AL/Leave). For flights, find route details using Google Search. Return ONLY a JSON array of objects with: type ('flight' or 'off'), flight_code (if flight), departure_city, arrival_city, departure_time, arrival_time, aircraft, layover." }
+        { text: `Extract the monthly flight schedule from this image. 
+        For EVERY day of the month shown in the image, identify if it's a flight or a day off.
+        - Days off are often marked as 'OFF', 'AL', 'Leave', 'G', 'R', 'S', or are blank.
+        - Flights have a flight code (e.g., CI104, AE365).
+        
+        For flights, use Google Search to find departure/arrival cities and times if not clear.
+        
+        Return ONLY a JSON array of objects, one for each day found.
+        Each object MUST have:
+        - day: number (the day of the month, e.g., 1, 2, 3...)
+        - type: "flight" or "off"
+        - flight_code: string (only if type is "flight")
+        - departure_city: string (only if type is "flight")
+        - arrival_city: string (only if type is "flight")
+        - departure_time: string (HH:mm, only if type is "flight")
+        - arrival_time: string (HH:mm, only if type is "flight")
+        - aircraft: string (optional)
+        - layover: string (optional)` }
       ],
       config: {
         tools: [{ googleSearch: {} }],
@@ -107,6 +124,7 @@ export async function scanSchedule(base64Data: string, mimeType: string) {
           items: {
             type: Type.OBJECT,
             properties: {
+              day: { type: Type.INTEGER },
               type: { type: Type.STRING, enum: ['flight', 'off'] },
               flight_code: { type: Type.STRING },
               departure_city: { type: Type.STRING },
@@ -116,7 +134,7 @@ export async function scanSchedule(base64Data: string, mimeType: string) {
               aircraft: { type: Type.STRING },
               layover: { type: Type.STRING }
             },
-            required: ["type"]
+            required: ["day", "type"]
           }
         }
       }

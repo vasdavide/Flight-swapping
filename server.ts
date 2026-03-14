@@ -113,6 +113,13 @@ async function startServer() {
     res.json({ status: "ok", env: process.env.NODE_ENV });
   });
 
+  app.get("/api/config", (req, res) => {
+    res.json({
+      hasGeminiKey: !!process.env.GEMINI_API_KEY,
+      env: process.env.NODE_ENV
+    });
+  });
+
   // API Routes
   app.get("/api/flights", (req, res) => {
     const email = req.query.email as string;

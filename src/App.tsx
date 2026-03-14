@@ -339,6 +339,23 @@ export default function App() {
     }
   }, [loginId]);
 
+  const [serverHasKey, setServerHasKey] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const checkConfig = async () => {
+      try {
+        const res = await fetch('/api/config');
+        const data = await res.json();
+        setServerHasKey(data.hasGeminiKey);
+      } catch (err) {
+        console.error("Failed to check server config", err);
+      }
+    };
+    checkConfig();
+  }, []);
+
+  const hasApiKey = !!(process.env.GEMINI_API_KEY || (typeof window !== 'undefined' && (window as any).GEMINI_API_KEY));
+
   const handleToggleAL = async (date: string) => {
     if (!loginId) return;
     try {
@@ -1831,14 +1848,19 @@ export default function App() {
                     <span className="text-gray-600">AI Engine (Gemini 3.1 Pro)</span>
                     <span className={cn(
                       "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase",
-                      process.env.GEMINI_API_KEY ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                      hasApiKey ? "bg-emerald-100 text-emerald-700" : (serverHasKey ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700")
                     )}>
-                      {process.env.GEMINI_API_KEY ? "Ready" : "Missing API Key"}
+                      {hasApiKey ? "Ready" : (serverHasKey ? "Syncing..." : "Missing API Key")}
                     </span>
                   </div>
-                  {!process.env.GEMINI_API_KEY && (
+                  {!hasApiKey && serverHasKey && (
+                    <p className="text-[10px] text-amber-600 italic">
+                      The server has the key, but the client is out of sync. Please <strong>re-share</strong> the app to update the live version.
+                    </p>
+                  )}
+                  {!hasApiKey && !serverHasKey && serverHasKey !== null && (
                     <p className="text-[10px] text-red-500 italic">
-                      Please configure your GEMINI_API_KEY in the AI Studio Secrets panel and re-share the app.
+                      Please configure your <strong>GEMINI_API_KEY</strong> in the AI Studio Secrets panel and then <strong>re-share</strong> the app.
                     </p>
                   )}
                   <div className="flex items-center justify-between text-sm">
