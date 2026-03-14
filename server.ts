@@ -301,8 +301,12 @@ async function startServer() {
         };
       } else if (currentRange.user_email === item.user_email) {
         // Normalize dates to midnight to compare days accurately
-        const d1 = new Date(currentRange.endDate + 'T00:00:00Z');
-        const d2 = new Date(item.date + 'T00:00:00Z');
+        // Ensure date is in YYYY-MM-DD format (take first 10 chars)
+        const date1 = currentRange.endDate.substring(0, 10);
+        const date2 = item.date.substring(0, 10);
+        
+        const d1 = new Date(date1 + 'T00:00:00Z');
+        const d2 = new Date(date2 + 'T00:00:00Z');
         const diff = d2.getTime() - d1.getTime();
         const oneDay = 24 * 60 * 60 * 1000;
 

@@ -637,7 +637,7 @@ export default function App() {
       const returnLeg = flights.find(f => 
         f.id !== flightId && 
         f.departure_city === mainFlight.arrival_city &&
-        (f.date === mainFlight.date || parseISO(f.date) > parseISO(mainFlight.date))
+        (f.date === mainFlight.date || safeParseISO(f.date) > safeParseISO(mainFlight.date))
       );
       if (returnLeg) returnId = returnLeg.id;
 
@@ -856,7 +856,7 @@ export default function App() {
               </div>
               
               <p className="text-sm text-gray-600 mb-4">
-                These crew members do not have a flight scheduled on <strong>{format(parseISO(candidatesModal.date), 'MMM d, yyyy')}</strong>. You can contact them to swap your flight <strong>{candidatesModal.flightCode}</strong>.
+                These crew members do not have a flight scheduled on <strong>{safeFormat(candidatesModal.date, 'MMM d, yyyy')}</strong>. You can contact them to swap your flight <strong>{candidatesModal.flightCode}</strong>.
               </p>
 
               <div className="max-h-60 overflow-y-auto space-y-2">
@@ -1862,7 +1862,7 @@ export default function App() {
                               const returnLeg = flights.find(rl => 
                                 rl.id !== f.id && 
                                 rl.departure_city === f.arrival_city &&
-                                (rl.date === f.date || parseISO(rl.date) > parseISO(f.date))
+                                (rl.date === f.date || safeParseISO(rl.date) > safeParseISO(f.date))
                               );
                               setOfferedReturnId(returnLeg ? returnLeg.id! : null);
                             }}
@@ -1991,7 +1991,7 @@ export default function App() {
                       <input 
                         type="date" 
                         value={selectedDate ? format(selectedDate, 'yyyy-MM-dd') : ''}
-                        onChange={(e) => setSelectedDate(e.target.value ? parseISO(e.target.value) : null)}
+                        onChange={(e) => setSelectedDate(e.target.value ? safeParseISO(e.target.value) : null)}
                         className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
                       />
                     </div>
@@ -2035,7 +2035,7 @@ export default function App() {
                         <input 
                           type="date" 
                           value={returnDate ? format(returnDate, 'yyyy-MM-dd') : ''}
-                          onChange={(e) => setReturnDate(e.target.value ? parseISO(e.target.value) : null)}
+                          onChange={(e) => setReturnDate(e.target.value ? safeParseISO(e.target.value) : null)}
                           className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
                         />
                       </div>
@@ -2098,7 +2098,7 @@ export default function App() {
                 <div className="flex items-center justify-between mb-8">
                   <div>
                     <h2 className="text-2xl font-bold tracking-tight">{selectedFlightForDetails.flight_code}</h2>
-                    <p className="text-sm text-gray-500">{format(parseISO(selectedFlightForDetails.date), 'EEEE, MMMM do')}</p>
+                    <p className="text-sm text-gray-500">{safeFormat(selectedFlightForDetails.date, 'EEEE, MMMM do')}</p>
                   </div>
                   <button 
                     onClick={() => setSelectedFlightForDetails(null)}
