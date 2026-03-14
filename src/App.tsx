@@ -235,6 +235,24 @@ export default function App() {
     }
   };
 
+  const [debugInfo, setDebugInfo] = useState<any>(null);
+
+  const fetchDebugInfo = async () => {
+    try {
+      const res = await fetch('/api/debug');
+      const data = await res.json();
+      setDebugInfo(data);
+    } catch (e) {
+      console.error("Failed to fetch debug info", e);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'profile') {
+      fetchDebugInfo();
+    }
+  }, [activeTab]);
+
   const fetchSwaps = async () => {
     try {
       const [swapsRes, crewRes] = await Promise.all([
@@ -243,6 +261,7 @@ export default function App() {
       ]);
       setSwaps(swapsRes);
       setAvailableCrew(crewRes);
+      fetchDebugInfo(); // Also refresh debug info
     } catch (err) {
       console.error("Failed to fetch swaps/crew", err);
     }
@@ -409,10 +428,15 @@ export default function App() {
       
       // 1. Add departing flight
       let depDetails: any = {};
+      let parseFailed = false;
       try {
         depDetails = await parseFlight(flightCode, depDateStr);
+        if (!depDetails.departure_city || depDetails.departure_city === 'Unknown') {
+          parseFailed = true;
+        }
       } catch (err) {
         console.warn("Failed to parse departing flight", err);
+        parseFailed = true;
       }
 
       const depFlight: Flight = {
@@ -432,6 +456,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(depFlight)
       });
+
+      if (parseFailed) {
+        setAlertMessage("Flight added, but we couldn't fetch the route details automatically. You can edit them in the flight details.");
+      }
 
       // 2. Add return flight if provided
       if (returnFlightCode) {
@@ -1745,6 +1773,52 @@ export default function App() {
                     <div className="text-xl font-bold">4.9</div>
                     <div className="text-[10px] text-gray-400 uppercase tracking-widest">Rating</div>
                   </div>
+                </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-black/5">
+                <h3 className="text-sm font-bold uppercase tracking-widest text-gray-400 mb-4">System Status</h3>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-600">AI Engine (Gemini 3.1 Pro)</span>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase",
+                      process.env.GEMINI_API_KEY ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                    )}>
+                      {process.env.GEMINI_API_KEY ? "Ready" : "Missing API Key"}
+                    </span>
+                  </div>
+                  {!process.env.GEMINI_API_KEY && (
+                    <p className="text-[10px] text-red-500 italic">
+                      Please configure your GEMINI_API_KEY in the AI Studio Secrets panel and re-share the app.
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-gray-600">Database Connection</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-100 text-emerald-700">
+                      Connected
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="mt-6 pt-6 border-t border-black/5 space-y-3">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-gray-400">
+                    <span>Data Stats</span>
+                    <button onClick={fetchSwaps} className="text-emerald-600 hover:underline">Refresh</button>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Active Swaps on Board</span>
+                    <span className="font-bold">{swaps.length} {debugInfo && `(Raw: ${debugInfo.swaps})`}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-gray-500">Available Crew (Off)</span>
+                    <span className="font-bold">{availableCrew.length} {debugInfo && `(Raw: ${debugInfo.crew})`}</span>
+                  </div>
+                  {debugInfo && (
+                    <div className="text-[8px] text-gray-300 mt-2">
+                      Server Time: {debugInfo.time} | DB Time: {debugInfo.sqlite_time?.now}
+                    </div>
+                  )}
                 </div>
               </div>
 

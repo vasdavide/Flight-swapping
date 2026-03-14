@@ -139,22 +139,29 @@ async function startServer() {
   });
 
   app.get("/api/swaps", (req, res) => {
-    const swaps = db.prepare(`
-      SELECT sr.*, 
-             f.flight_code, f.departure_city, f.arrival_city, f.date, f.departure_time,
-             f2.flight_code as return_code, f2.departure_city as return_dep, f2.arrival_city as return_arr, f2.date as return_date, f2.departure_time as return_time
-      FROM swap_requests sr
-      LEFT JOIN flights f ON (
-        sr.flight_id = f.id OR 
-        (sr.group_id IS NOT NULL AND f.id = (SELECT id FROM flights WHERE group_id = sr.group_id ORDER BY id ASC LIMIT 1))
-      )
-      LEFT JOIN flights f2 ON (
-        sr.return_flight_id = f2.id OR 
-        (sr.group_id IS NOT NULL AND f2.id = (SELECT id FROM flights WHERE group_id = sr.group_id ORDER BY id ASC LIMIT 1 OFFSET 1))
-      )
-      WHERE sr.status = 'pending'
-    `).all();
-    res.json(swaps);
+    console.log("[GET /api/swaps] Fetching pending swaps...");
+    try {
+      const swaps = db.prepare(`
+        SELECT sr.*, 
+               f.flight_code, f.departure_city, f.arrival_city, f.date, f.departure_time,
+               f2.flight_code as return_code, f2.departure_city as return_dep, f2.arrival_city as return_arr, f2.date as return_date, f2.departure_time as return_time
+        FROM swap_requests sr
+        LEFT JOIN flights f ON (
+          sr.flight_id = f.id OR 
+          (sr.group_id IS NOT NULL AND f.id = (SELECT id FROM flights WHERE group_id = sr.group_id ORDER BY id ASC LIMIT 1))
+        )
+        LEFT JOIN flights f2 ON (
+          sr.return_flight_id = f2.id OR 
+          (sr.group_id IS NOT NULL AND f2.id = (SELECT id FROM flights WHERE group_id = sr.group_id ORDER BY id ASC LIMIT 1 OFFSET 1))
+        )
+        WHERE sr.status = 'pending'
+      `).all();
+      console.log(`[GET /api/swaps] Found ${swaps.length} swaps.`);
+      res.json(swaps);
+    } catch (err) {
+      console.error("[GET /api/swaps] Error:", err);
+      res.status(500).json({ error: "Internal server error" });
+    }
   });
 
   app.post("/api/swaps", (req, res) => {
@@ -272,47 +279,54 @@ async function startServer() {
   });
 
   app.get("/api/available-crew", (req, res) => {
-    // ... existing grouped logic ...
-    // (I will just replace the whole block to be safe and clean)
-    const crew = db.prepare(`
-      SELECT al.*, 
-             (SELECT COUNT(*) FROM flights f WHERE f.user_email = al.user_email AND f.date = al.date) as has_flight
-      FROM annual_leaves al
-      WHERE al.date >= date('now')
-      ORDER BY al.user_email, al.date ASC
-    `).all() as any[];
+    console.log("[GET /api/available-crew] Fetching available crew...");
+    try {
+      const crew = db.prepare(`
+        SELECT al.*, 
+               (SELECT COUNT(*) FROM flights f WHERE f.user_email = al.user_email AND f.date = al.date) as has_flight
+        FROM annual_leaves al
+        WHERE al.date >= date('now', '-1 day')
+        ORDER BY al.user_email, al.date ASC
+      `).all() as any[];
 
-    const filtered = crew.filter(c => c.has_flight === 0);
-    const grouped: any[] = [];
+      console.log(`[GET /api/available-crew] Found ${crew.length} raw leave entries.`);
+      const filtered = crew.filter(c => c.has_flight === 0);
+      console.log(`[GET /api/available-crew] Found ${filtered.length} crew without flights.`);
+      
+      const grouped: any[] = [];
+      if (filtered.length === 0) {
+        return res.json([]);
+      }
 
-    if (filtered.length === 0) {
-      return res.json([]);
-    }
+      let currentRange: any = null;
+      for (const item of filtered) {
+        if (!currentRange) {
+          currentRange = {
+            user_email: item.user_email,
+            startDate: item.date,
+            endDate: item.date,
+            dates: [item.date]
+          };
+        } else if (currentRange.user_email === item.user_email) {
+          const date1 = currentRange.endDate.substring(0, 10);
+          const date2 = item.date.substring(0, 10);
+          const d1 = new Date(date1 + 'T00:00:00Z');
+          const d2 = new Date(date2 + 'T00:00:00Z');
+          const diff = d2.getTime() - d1.getTime();
+          const oneDay = 24 * 60 * 60 * 1000;
 
-    let currentRange: any = null;
-
-    for (const item of filtered) {
-      if (!currentRange) {
-        currentRange = {
-          user_email: item.user_email,
-          startDate: item.date,
-          endDate: item.date,
-          dates: [item.date]
-        };
-      } else if (currentRange.user_email === item.user_email) {
-        // Normalize dates to midnight to compare days accurately
-        // Ensure date is in YYYY-MM-DD format (take first 10 chars)
-        const date1 = currentRange.endDate.substring(0, 10);
-        const date2 = item.date.substring(0, 10);
-        
-        const d1 = new Date(date1 + 'T00:00:00Z');
-        const d2 = new Date(date2 + 'T00:00:00Z');
-        const diff = d2.getTime() - d1.getTime();
-        const oneDay = 24 * 60 * 60 * 1000;
-
-        if (Math.abs(diff - oneDay) < 1000) { // Allow 1 second jitter
-          currentRange.endDate = item.date;
-          currentRange.dates.push(item.date);
+          if (Math.abs(diff - oneDay) < 1000) {
+            currentRange.endDate = item.date;
+            currentRange.dates.push(item.date);
+          } else {
+            grouped.push(currentRange);
+            currentRange = {
+              user_email: item.user_email,
+              startDate: item.date,
+              endDate: item.date,
+              dates: [item.date]
+            };
+          }
         } else {
           grouped.push(currentRange);
           currentRange = {
@@ -322,22 +336,15 @@ async function startServer() {
             dates: [item.date]
           };
         }
-      } else {
-        grouped.push(currentRange);
-        currentRange = {
-          user_email: item.user_email,
-          startDate: item.date,
-          endDate: item.date,
-          dates: [item.date]
-        };
       }
+      if (currentRange) grouped.push(currentRange);
+      
+      console.log(`[GET /api/available-crew] Returning ${grouped.length} grouped crew ranges.`);
+      res.json(grouped);
+    } catch (err) {
+      console.error("[GET /api/available-crew] Error:", err);
+      res.status(500).json({ error: "Internal server error" });
     }
-
-    if (currentRange) {
-      grouped.push(currentRange);
-    }
-
-    res.json(grouped);
   });
 
   app.get("/api/notifications", (req, res) => {
@@ -463,6 +470,26 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  app.get("/api/debug", (req, res) => {
+    try {
+      const flights = db.prepare("SELECT COUNT(*) as count FROM flights").get() as any;
+      const swaps = db.prepare("SELECT COUNT(*) as count FROM swap_requests").get() as any;
+      const crew = db.prepare("SELECT COUNT(*) as count FROM annual_leaves").get() as any;
+      const proposals = db.prepare("SELECT COUNT(*) as count FROM swap_proposals").get() as any;
+      
+      res.json({
+        flights: flights.count,
+        swaps: swaps.count,
+        crew: crew.count,
+        proposals: proposals.count,
+        time: new Date().toISOString(),
+        sqlite_time: db.prepare("SELECT datetime('now') as now").get()
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
