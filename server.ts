@@ -23,18 +23,6 @@ function addColumnIfNotExists(tableName: string, columnName: string, columnDefin
   }
 }
 
-addColumnIfNotExists("flights", "pilot", "TEXT");
-addColumnIfNotExists("flights", "aircraft", "TEXT");
-addColumnIfNotExists("flights", "layover", "TEXT");
-addColumnIfNotExists("flights", "group_id", "TEXT");
-addColumnIfNotExists("flights", "is_duty", "INTEGER DEFAULT 0");
-addColumnIfNotExists("swap_requests", "return_flight_id", "INTEGER");
-addColumnIfNotExists("swap_requests", "group_id", "TEXT");
-addColumnIfNotExists("swap_proposals", "proposer_flight_id_return", "INTEGER");
-
-// Initialize Gemini
-// const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 // Initialize database
 db.exec(`
   CREATE TABLE IF NOT EXISTS flights (
@@ -58,6 +46,7 @@ db.exec(`
     requester_email TEXT,
     flight_id INTEGER,
     return_flight_id INTEGER,
+    group_id TEXT,
     status TEXT DEFAULT 'pending',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(flight_id) REFERENCES flights(id),
@@ -95,6 +84,15 @@ db.exec(`
     is_read INTEGER DEFAULT 0
   );
 `);
+
+addColumnIfNotExists("flights", "pilot", "TEXT");
+addColumnIfNotExists("flights", "aircraft", "TEXT");
+addColumnIfNotExists("flights", "layover", "TEXT");
+addColumnIfNotExists("flights", "group_id", "TEXT");
+addColumnIfNotExists("flights", "is_duty", "INTEGER DEFAULT 0");
+addColumnIfNotExists("swap_requests", "return_flight_id", "INTEGER");
+addColumnIfNotExists("swap_requests", "group_id", "TEXT");
+addColumnIfNotExists("swap_proposals", "proposer_flight_id_return", "INTEGER");
 
 async function startServer() {
   const app = express();
@@ -174,17 +172,29 @@ async function startServer() {
 
   app.post("/api/swaps", (req, res) => {
     const { requester_email, flight_id, return_flight_id, group_id } = req.body;
-    // Check if already listed
-    let existing;
-    if (group_id) {
-        existing = db.prepare("SELECT * FROM swap_requests WHERE group_id = ? AND status = 'pending'").get(group_id);
-    } else {
-        existing = db.prepare("SELECT * FROM swap_requests WHERE flight_id = ? AND status = 'pending'").get(flight_id);
-    }
-    if (existing) return res.status(400).json({ error: "Flight already listed" });
+    console.log("[POST /api/swaps] Request body:", req.body);
+    try {
+      // Check if already listed
+      let existing;
+      if (group_id) {
+          existing = db.prepare("SELECT * FROM swap_requests WHERE group_id = ? AND status = 'pending'").get(group_id);
+      } else if (flight_id) {
+          existing = db.prepare("SELECT * FROM swap_requests WHERE flight_id = ? AND status = 'pending'").get(flight_id);
+      } else {
+          return res.status(400).json({ error: "Missing flight_id or group_id" });
+      }
+      if (existing) {
+        console.log("[POST /api/swaps] Already listed:", existing);
+        return res.status(400).json({ error: "Flight already listed" });
+      }
 
-    const info = db.prepare("INSERT INTO swap_requests (requester_email, flight_id, return_flight_id, group_id) VALUES (?, ?, ?, ?)").run(requester_email, flight_id || null, return_flight_id || null, group_id || null);
-    res.json({ id: info.lastInsertRowid });
+      const info = db.prepare("INSERT INTO swap_requests (requester_email, flight_id, return_flight_id, group_id) VALUES (?, ?, ?, ?)").run(requester_email, flight_id || null, return_flight_id || null, group_id || null);
+      console.log("[POST /api/swaps] Success, new ID:", info.lastInsertRowid);
+      res.json({ id: info.lastInsertRowid });
+    } catch (err) {
+      console.error("[POST /api/swaps] Error:", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
+    }
   });
 
   app.delete("/api/swaps/:id", (req, res) => {

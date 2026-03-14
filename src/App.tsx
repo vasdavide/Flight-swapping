@@ -773,11 +773,7 @@ export default function App() {
       fetchSwaps();
     } catch (err: any) {
       console.error("Detailed error in handlePostSwap:", err);
-      // If it's a DOMException or similar, provide a cleaner message
-      const errorMessage = err.name === 'DataError' || err.message.includes('pattern') 
-        ? "There was a technical issue with the request format. Please try again or refresh the page."
-        : err.message;
-      setAlertMessage(errorMessage);
+      setAlertMessage(err.message);
     }
   };
 
