@@ -452,25 +452,6 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Vite middleware for development
-  const isProd = process.env.NODE_ENV === "production" || process.env.VITE_PROD === "true";
-  
-  if (!isProd) {
-    console.log("Starting Vite in middleware mode...");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.resolve(__dirname, "dist");
-    console.log("Serving static files from:", distPath);
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
   app.get("/api/debug", (req, res) => {
     try {
       const flights = db.prepare("SELECT COUNT(*) as count FROM flights").get() as any;
@@ -490,6 +471,25 @@ async function startServer() {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // Vite middleware for development
+  const isProd = process.env.NODE_ENV === "production" || process.env.VITE_PROD === "true";
+  
+  if (!isProd) {
+    console.log("Starting Vite in middleware mode...");
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.resolve(__dirname, "dist");
+    console.log("Serving static files from:", distPath);
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);

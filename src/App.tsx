@@ -240,10 +240,15 @@ export default function App() {
   const fetchDebugInfo = async () => {
     try {
       const res = await fetch('/api/debug');
+      if (!res.ok) {
+        const text = await res.text();
+        console.error(`Debug info fetch failed: ${res.status}`, text);
+        return;
+      }
       const data = await res.json();
       setDebugInfo(data);
-    } catch (e) {
-      console.error("Failed to fetch debug info", e);
+    } catch (e: any) {
+      console.error("Failed to fetch debug info", e.message || e);
     }
   };
 
@@ -282,10 +287,15 @@ export default function App() {
     if (!loginId) return;
     try {
       const res = await fetch(`/api/notifications?email=${encodeURIComponent(loginId)}`);
+      if (!res.ok) {
+        const text = await res.text();
+        console.error(`Notifications fetch failed: ${res.status}`, text);
+        return;
+      }
       const data = await res.json();
       setNotifications(data);
-    } catch (err) {
-      console.error("Failed to fetch notifications", err);
+    } catch (err: any) {
+      console.error("Failed to fetch notifications", err.message || err);
     }
   };
 
