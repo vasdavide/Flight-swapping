@@ -84,6 +84,16 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_email, date)
   );
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipient_email TEXT,
+    sender_email TEXT,
+    message TEXT,
+    type TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_read INTEGER DEFAULT 0
+  );
 `);
 
 async function startServer() {
@@ -262,15 +272,95 @@ async function startServer() {
   });
 
   app.get("/api/available-crew", (req, res) => {
+    // ... existing grouped logic ...
+    // (I will just replace the whole block to be safe and clean)
     const crew = db.prepare(`
       SELECT al.*, 
              (SELECT COUNT(*) FROM flights f WHERE f.user_email = al.user_email AND f.date = al.date) as has_flight
       FROM annual_leaves al
       WHERE al.date >= date('now')
-      ORDER BY al.date ASC
-    `).all();
-    // Filter out those who might have added a flight later (though AL usually means they are off)
-    res.json(crew.filter((c: any) => c.has_flight === 0));
+      ORDER BY al.user_email, al.date ASC
+    `).all() as any[];
+
+    const filtered = crew.filter(c => c.has_flight === 0);
+    const grouped: any[] = [];
+
+    if (filtered.length === 0) {
+      return res.json([]);
+    }
+
+    let currentRange: any = null;
+
+    for (const item of filtered) {
+      if (!currentRange) {
+        currentRange = {
+          user_email: item.user_email,
+          startDate: item.date,
+          endDate: item.date,
+          dates: [item.date]
+        };
+      } else if (currentRange.user_email === item.user_email) {
+        // Normalize dates to midnight to compare days accurately
+        const d1 = new Date(currentRange.endDate + 'T00:00:00Z');
+        const d2 = new Date(item.date + 'T00:00:00Z');
+        const diff = d2.getTime() - d1.getTime();
+        const oneDay = 24 * 60 * 60 * 1000;
+
+        if (Math.abs(diff - oneDay) < 1000) { // Allow 1 second jitter
+          currentRange.endDate = item.date;
+          currentRange.dates.push(item.date);
+        } else {
+          grouped.push(currentRange);
+          currentRange = {
+            user_email: item.user_email,
+            startDate: item.date,
+            endDate: item.date,
+            dates: [item.date]
+          };
+        }
+      } else {
+        grouped.push(currentRange);
+        currentRange = {
+          user_email: item.user_email,
+          startDate: item.date,
+          endDate: item.date,
+          dates: [item.date]
+        };
+      }
+    }
+
+    if (currentRange) {
+      grouped.push(currentRange);
+    }
+
+    res.json(grouped);
+  });
+
+  app.get("/api/notifications", (req, res) => {
+    const email = req.query.email as string;
+    const notifications = db.prepare("SELECT * FROM notifications WHERE recipient_email = ? ORDER BY created_at DESC").all(email);
+    res.json(notifications);
+  });
+
+  app.post("/api/notifications", (req, res) => {
+    const { recipient_email, sender_email, message, type } = req.body;
+    const info = db.prepare(`
+      INSERT INTO notifications (recipient_email, sender_email, message, type)
+      VALUES (?, ?, ?, ?)
+    `).run(recipient_email, sender_email, message, type);
+    res.json({ id: info.lastInsertRowid });
+  });
+
+  app.delete("/api/notifications/:id", (req, res) => {
+    const { id } = req.params;
+    db.prepare("DELETE FROM notifications WHERE id = ?").run(id);
+    res.json({ success: true });
+  });
+
+  app.post("/api/notifications/read-all", (req, res) => {
+    const { email } = req.body;
+    db.prepare("UPDATE notifications SET is_read = 1 WHERE recipient_email = ?").run(email);
+    res.json({ success: true });
   });
 
   // End of API Routes

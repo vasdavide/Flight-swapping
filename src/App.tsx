@@ -19,7 +19,8 @@ import {
   FolderOpen,
   Search,
   CalendarCheck,
-  CheckCircle2
+  CheckCircle2,
+  Bell
 } from 'lucide-react';
 import { 
   format, 
@@ -45,17 +46,47 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const safeParseISO = (dateStr: string | null | undefined) => {
+  if (!dateStr) return new Date();
+  // Handle SQLite format YYYY-MM-DD HH:mm:ss by replacing space with T
+  const isoStr = dateStr.includes(' ') && !dateStr.includes('T') 
+    ? dateStr.replace(' ', 'T') 
+    : dateStr;
+  try {
+    const parsed = parseISO(isoStr);
+    if (!isNaN(parsed.getTime())) return parsed;
+    
+    // Fallback to native Date if parseISO fails
+    const native = new Date(dateStr);
+    if (!isNaN(native.getTime())) return native;
+  } catch (e) {
+    console.warn("Date parsing failed for:", dateStr, e);
+  }
+  return new Date();
+};
+
+const safeFormat = (date: Date | string | null | undefined, formatStr: string) => {
+  if (!date) return '';
+  const dateObj = typeof date === 'string' ? safeParseISO(date) : date;
+  try {
+    return format(dateObj, formatStr);
+  } catch (e) {
+    console.warn("Date formatting failed", e);
+    return '';
+  }
+};
+
 const formatDateRange = (dateStr: string, returnDateStr?: string | null) => {
   if (!dateStr) return '';
-  const date = parseISO(dateStr);
+  const date = safeParseISO(dateStr);
   if (!returnDateStr || returnDateStr === dateStr) {
-    return format(date, 'MMM d').toUpperCase();
+    return safeFormat(date, 'MMM d').toUpperCase();
   }
-  const returnDate = parseISO(returnDateStr);
-  if (format(date, 'MMM') === format(returnDate, 'MMM')) {
-    return `${format(date, 'MMM d')}-${format(returnDate, 'd')}`.toUpperCase();
+  const returnDate = safeParseISO(returnDateStr);
+  if (safeFormat(date, 'MMM') === safeFormat(returnDate, 'MMM')) {
+    return `${safeFormat(date, 'MMM d')}-${safeFormat(returnDate, 'd')}`.toUpperCase();
   }
-  return `${format(date, 'MMM d')}-${format(returnDate, 'MMM d')}`.toUpperCase();
+  return `${safeFormat(date, 'MMM d')}-${safeFormat(returnDate, 'MMM d')}`.toUpperCase();
 };
 
 class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: any}> {
@@ -157,6 +188,9 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [annualLeaves, setAnnualLeaves] = useState<string[]>([]);
   const [availableCrew, setAvailableCrew] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [isSendingNotification, setIsSendingNotification] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Modals state
@@ -225,12 +259,28 @@ export default function App() {
     }
   };
 
+  const fetchNotifications = async () => {
+    if (!loginId) return;
+    try {
+      const res = await fetch(`/api/notifications?email=${encodeURIComponent(loginId)}`);
+      const data = await res.json();
+      setNotifications(data);
+    } catch (err) {
+      console.error("Failed to fetch notifications", err);
+    }
+  };
+
   useEffect(() => {
     if (loginId) {
       fetchFlights();
       fetchSwaps();
       fetchProposals();
       fetchAnnualLeaves();
+      fetchNotifications();
+      
+      // Poll for notifications every 30 seconds
+      const interval = setInterval(fetchNotifications, 30000);
+      return () => clearInterval(interval);
     }
   }, [loginId]);
 
@@ -832,12 +882,32 @@ export default function App() {
                           {candidate.is_al && <div className="text-[9px] text-emerald-600 font-medium uppercase tracking-wider">On Annual Leave</div>}
                         </div>
                       </div>
-                      <a 
-                        href={`mailto:${candidate.email}?subject=Flight Swap Request: ${candidatesModal.flightCode} on ${format(parseISO(candidatesModal.date), 'MMM d')}&body=Hi,%0D%0A%0D%0AI saw you are ${candidate.is_al ? 'on annual leave' : 'off'} on ${format(parseISO(candidatesModal.date), 'MMM d')}. Would you be interested in taking my flight ${candidatesModal.flightCode}?%0D%0A%0D%0AThanks!`}
-                        className="text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                      <button 
+                        disabled={isSendingNotification === candidate.email}
+                        onClick={async () => {
+                          setIsSendingNotification(candidate.email);
+                          try {
+                            await fetch('/api/notifications', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                recipient_email: candidate.email,
+                                sender_email: loginId,
+                                message: `I'm interested in swapping my flight ${candidatesModal.flightCode} on ${safeFormat(candidatesModal.date, 'MMM d')} with you.`,
+                                type: 'swap_interest'
+                              })
+                            });
+                            setAlertMessage(`Request sent to ${candidate.email}!`);
+                          } catch (err) {
+                            console.error("Failed to send notification", err);
+                          } finally {
+                            setIsSendingNotification(null);
+                          }
+                        }}
+                        className="text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
                       >
-                        Email
-                      </a>
+                        {isSendingNotification === candidate.email ? 'Sending...' : 'Request Swap'}
+                      </button>
                     </div>
                   ))
                 )}
@@ -901,6 +971,87 @@ export default function App() {
             </motion.div>
           </motion.div>
         )}
+
+        {showNotifications && (
+          <motion.div 
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          >
+            <motion.div 
+              initial={{ scale: 0.95 }} animate={{ scale: 1 }} exit={{ scale: 0.95 }}
+              className="bg-white p-6 rounded-2xl max-w-md w-full shadow-xl max-h-[80vh] flex flex-col"
+            >
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold">Notifications</h3>
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={async () => {
+                      await fetch('/api/notifications/read-all', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: loginId })
+                      });
+                      fetchNotifications();
+                    }}
+                    className="text-xs text-emerald-600 font-medium hover:underline"
+                  >
+                    Mark all as read
+                  </button>
+                  <button onClick={() => setShowNotifications(false)} className="text-gray-400 hover:text-gray-600">
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto flex-1 space-y-3 pr-1">
+                {notifications.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    <Bell size={40} className="mx-auto mb-3 opacity-20" />
+                    <p>No notifications yet</p>
+                  </div>
+                ) : (
+                  notifications.map(notif => (
+                    <div 
+                      key={notif.id} 
+                      className={cn(
+                        "p-4 rounded-xl border transition-colors",
+                        notif.is_read ? "bg-white border-gray-100" : "bg-emerald-50/50 border-emerald-100"
+                      )}
+                    >
+                      <div className="flex justify-between items-start mb-1">
+                        <div className="text-xs font-bold text-gray-900">{notif.sender_email}</div>
+                        <div className="text-[10px] text-gray-400">{safeFormat(notif.created_at, 'MMM d, HH:mm')}</div>
+                      </div>
+                      <p className="text-sm text-gray-600 mb-3">{notif.message}</p>
+                      <div className="flex justify-end gap-2">
+                        <button 
+                          onClick={async () => {
+                            await fetch(`/api/notifications/${notif.id}`, { method: 'DELETE' });
+                            fetchNotifications();
+                          }}
+                          className="px-3 py-1.5 text-[10px] font-bold text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
+                        >
+                          Dismiss
+                        </button>
+                        <button 
+                          onClick={() => {
+                            // Pre-fill email in profile or something?
+                            // For now just dismiss and maybe show alert
+                            setShowNotifications(false);
+                            setAlertMessage(`You can contact ${notif.sender_email} to discuss the swap.`);
+                          }}
+                          className="px-3 py-1.5 text-[10px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg transition-colors"
+                        >
+                          View Profile
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
 
       {/* Header */}
@@ -912,6 +1063,15 @@ export default function App() {
           <h1 className="text-xl font-semibold tracking-tight">Flight swapping search</h1>
         </div>
         <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setShowNotifications(true)}
+            className="relative p-2 text-gray-500 hover:bg-gray-100 rounded-xl transition-colors"
+          >
+            <Bell size={20} />
+            {notifications.some(n => !n.is_read) && (
+              <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border-2 border-white"></span>
+            )}
+          </button>
           <button 
             onClick={() => setActiveTab('calendar')}
             className={cn("px-4 py-2 rounded-lg text-sm font-medium transition-colors", activeTab === 'calendar' ? "bg-emerald-50 text-emerald-700" : "hover:bg-gray-100")}
@@ -1350,17 +1510,50 @@ export default function App() {
                           </div>
                         </div>
                         <div className="flex items-center justify-between text-xs">
-                          <span className="text-gray-400">Available on</span>
-                          <span className="font-bold">{format(parseISO(crew.date), 'MMM d, yyyy')}</span>
+                          <span className="text-gray-400">Available</span>
+                          <span className="font-bold">
+                            {crew.startDate === crew.endDate 
+                              ? safeFormat(crew.startDate, 'MMM d, yyyy')
+                              : `${safeFormat(crew.startDate, 'MMM d')} - ${safeFormat(crew.endDate, 'MMM d, yyyy')}`
+                            }
+                          </span>
                         </div>
                         <button 
-                          onClick={() => {
-                            // Open a mailto or some contact method
-                            window.location.href = `mailto:${crew.user_email}?subject=Swap Request for ${format(parseISO(crew.date), 'MMM d')}&body=Hi, I saw you are available on ${format(parseISO(crew.date), 'MMM d')}. Would you be interested in taking one of my flights?`;
+                          disabled={isSendingNotification === crew.user_email}
+                          onClick={async () => {
+                            const dateRange = crew.startDate === crew.endDate 
+                              ? safeFormat(crew.startDate, 'MMM d')
+                              : `${safeFormat(crew.startDate, 'MMM d')} - ${safeFormat(crew.endDate, 'MMM d')}`;
+                            
+                            setIsSendingNotification(crew.user_email);
+                            try {
+                              await fetch('/api/notifications', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  recipient_email: crew.user_email,
+                                  sender_email: loginId,
+                                  message: `I'm interested in swapping flights with you for ${dateRange}.`,
+                                  type: 'swap_interest'
+                                })
+                              });
+                              setAlertMessage(`Request sent to ${crew.user_email}! They will see it in their notifications.`);
+                            } catch (err) {
+                              console.error("Failed to send notification", err);
+                            } finally {
+                              setIsSendingNotification(null);
+                            }
                           }}
-                          className="w-full mt-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:bg-blue-700 transition-colors"
+                          className="w-full mt-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-bold hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                         >
-                          Contact Crew
+                          {isSendingNotification === crew.user_email ? (
+                            <>
+                              <Loader2 size={12} className="animate-spin" />
+                              Sending...
+                            </>
+                          ) : (
+                            'Send Interest Request'
+                          )}
                         </button>
                       </div>
                     ))}
