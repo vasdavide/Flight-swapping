@@ -382,10 +382,10 @@ export default function App() {
       reader.readAsDataURL(file);
       const base64Data = await base64Promise;
 
-      const extractedFlights: Flight[] = await scanSchedule(base64Data, file.type);
+      const extractedEntries: any[] = await scanSchedule(base64Data, file.type);
       
-      if (extractedFlights.length === 0) {
-        setAlertMessage("No flights detected in the image. Please try a clearer photo.");
+      if (extractedEntries.length === 0) {
+        setAlertMessage("No schedule entries detected in the image. Please try a clearer photo.");
         return;
       }
 
@@ -398,32 +398,42 @@ export default function App() {
       const month = currentDate.getMonth();
       const daysInMonth = new Date(year, month + 1, 0).getDate();
 
-      // Save all extracted flights, mapping them to consecutive days
-      for (let i = 0; i < extractedFlights.length; i++) {
-        const flight = extractedFlights[i];
+      // Save all extracted entries, mapping them to consecutive days
+      for (let i = 0; i < extractedEntries.length; i++) {
+        const entry = extractedEntries[i];
         
         // Don't exceed days in month
         if (i >= daysInMonth) break;
         
-        // Skip empty flight codes
-        if (!flight.flight_code || flight.flight_code.trim() === '') continue;
-
         const day = i + 1;
         const dateString = safeFormat(new Date(year, month, day), 'yyyy-MM-dd');
 
-        const isDuplicate = currentFlights.some(f => f.date === dateString && f.flight_code.toUpperCase() === flight.flight_code.toUpperCase());
+        if (entry.type === 'off') {
+          // Automatically mark as Annual Leave/Day Off
+          await fetch('/api/annual-leaves/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: loginId, date: dateString, force: 'add' })
+          });
+          continue;
+        }
+
+        // Skip empty flight codes
+        if (!entry.flight_code || entry.flight_code.trim() === '') continue;
+
+        const isDuplicate = currentFlights.some(f => f.date === dateString && f.flight_code.toUpperCase() === entry.flight_code.toUpperCase());
         
         if (!isDuplicate) {
           await fetch('/api/flights', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              ...flight,
+              ...entry,
               date: dateString,
               user_email: loginId
             })
           });
-          currentFlights.push({...flight, date: dateString});
+          currentFlights.push({...entry, date: dateString});
           addedCount++;
         } else {
           duplicateCount++;
@@ -431,7 +441,9 @@ export default function App() {
       }
 
       await fetchFlights();
-      setAlertMessage(`Successfully imported ${addedCount} flights. ${duplicateCount > 0 ? `Skipped ${duplicateCount} duplicates.` : ''}`);
+      await fetchAnnualLeaves();
+      await fetchSwaps();
+      setAlertMessage(`Successfully imported ${addedCount} flights and marked days off. ${duplicateCount > 0 ? `Skipped ${duplicateCount} duplicates.` : ''}`);
     } catch (err: any) {
       console.error("Failed to scan schedule", err);
       if (err.message === "GEMINI_API_KEY_MISSING") {

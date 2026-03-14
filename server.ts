@@ -266,9 +266,16 @@ async function startServer() {
   });
 
   app.post("/api/annual-leaves/toggle", (req, res) => {
-    const { email, date } = req.body;
+    const { email, date, force } = req.body;
     const existing = db.prepare("SELECT id FROM annual_leaves WHERE user_email = ? AND date = ?").get(email, date);
     
+    if (force === 'add') {
+      if (!existing) {
+        db.prepare("INSERT INTO annual_leaves (user_email, date) VALUES (?, ?)").run(email, date);
+      }
+      return res.json({ status: 'added' });
+    }
+
     if (existing) {
       db.prepare("DELETE FROM annual_leaves WHERE user_email = ? AND date = ?").run(email, date);
       res.json({ status: 'removed' });

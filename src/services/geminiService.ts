@@ -14,9 +14,9 @@ export async function parseFlight(flightCode: string, dateString: string) {
   const ai = getAI();
   try {
     // Attempt 1: With Google Search
-    console.log(`[parseFlight] Attempting with Google Search using gemini-3.1-pro-preview...`);
+    console.log(`[parseFlight] Attempting with Google Search using gemini-3-flash-preview...`);
     let response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: `Search for the flight details of "${flightCode}" on ${dateString}. 
       Prioritize official airline websites like China Airlines (china-airlines.com), EVA Air, or flight tracking sites like FlightAware and FlightRadar24.
       I need:
@@ -53,7 +53,7 @@ export async function parseFlight(flightCode: string, dateString: string) {
       throw new Error("Incomplete data from search");
     } catch (e) {
       console.warn("[parseFlight] Failed to parse search response, trying fallback", e);
-      throw e; // Trigger catch block for Attempt 2
+      throw e; 
     }
   } catch (searchErr: any) {
     console.warn("[parseFlight] Search grounding failed or returned invalid data:", searchErr);
@@ -62,7 +62,7 @@ export async function parseFlight(flightCode: string, dateString: string) {
     console.log(`[parseFlight] Attempting fallback without tools...`);
     try {
       let response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3-flash-preview",
         contents: `Provide the typical flight schedule for flight code "${flightCode}". 
         The date is ${dateString}. If you don't know the exact time, provide the most common schedule for this flight number.
         Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
@@ -92,12 +92,12 @@ export async function parseFlight(flightCode: string, dateString: string) {
 export async function scanSchedule(base64Data: string, mimeType: string) {
   const ai = getAI();
   try {
-    console.log(`[scanSchedule] Scanning schedule image with gemini-3.1-pro-preview...`);
+    console.log(`[scanSchedule] Scanning schedule image with gemini-3-flash-preview...`);
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-pro-preview",
+      model: "gemini-3-flash-preview",
       contents: [
         { inlineData: { data: base64Data, mimeType } },
-        { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its route details (departure city, arrival city, times, aircraft). Search official airline sites like China Airlines if relevant. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time, aircraft, layover." }
+        { text: "Extract all schedule entries from this image. For each day, identify if it's a flight or a day off (OFF/AL/Leave). For flights, find route details using Google Search. Return ONLY a JSON array of objects with: type ('flight' or 'off'), flight_code (if flight), departure_city, arrival_city, departure_time, arrival_time, aircraft, layover." }
       ],
       config: {
         tools: [{ googleSearch: {} }],
@@ -107,6 +107,7 @@ export async function scanSchedule(base64Data: string, mimeType: string) {
           items: {
             type: Type.OBJECT,
             properties: {
+              type: { type: Type.STRING, enum: ['flight', 'off'] },
               flight_code: { type: Type.STRING },
               departure_city: { type: Type.STRING },
               arrival_city: { type: Type.STRING },
@@ -115,7 +116,7 @@ export async function scanSchedule(base64Data: string, mimeType: string) {
               aircraft: { type: Type.STRING },
               layover: { type: Type.STRING }
             },
-            required: ["flight_code", "departure_city", "arrival_city", "departure_time", "arrival_time"]
+            required: ["type"]
           }
         }
       }
