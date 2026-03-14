@@ -354,7 +354,7 @@ export default function App() {
         if (!flight.flight_code || flight.flight_code.trim() === '') continue;
 
         const day = i + 1;
-        const dateString = format(new Date(year, month, day), 'yyyy-MM-dd');
+        const dateString = safeFormat(new Date(year, month, day), 'yyyy-MM-dd');
 
         const isDuplicate = currentFlights.some(f => f.date === dateString && f.flight_code.toUpperCase() === flight.flight_code.toUpperCase());
         
@@ -394,8 +394,8 @@ export default function App() {
   const handleAddFlight = async () => {
     if (!flightCode || !selectedDate) return;
     
-    const depDateStr = format(selectedDate, 'yyyy-MM-dd');
-    const retDateStr = isSameDayReturn ? depDateStr : (returnDate ? format(returnDate, 'yyyy-MM-dd') : depDateStr);
+    const depDateStr = safeFormat(selectedDate, 'yyyy-MM-dd');
+    const retDateStr = isSameDayReturn ? depDateStr : (returnDate ? safeFormat(returnDate, 'yyyy-MM-dd') : depDateStr);
     
     setIsLoading(true);
     try {
@@ -459,8 +459,8 @@ export default function App() {
       if (!isSameDayReturn && returnDate && selectedDate) {
         let current = addDays(selectedDate, 1);
         const actualReturnDate = returnDate;
-        while (format(current, 'yyyy-MM-dd') < format(actualReturnDate, 'yyyy-MM-dd')) {
-          const dutyDateStr = format(current, 'yyyy-MM-dd');
+        while (safeFormat(current, 'yyyy-MM-dd') < safeFormat(actualReturnDate, 'yyyy-MM-dd')) {
+          const dutyDateStr = safeFormat(current, 'yyyy-MM-dd');
           const dutyEntry: Flight = {
             user_email: loginId,
             flight_code: 'ON DUTY',
@@ -572,7 +572,7 @@ export default function App() {
     const dataStr = JSON.stringify(userFlights, null, 2);
     const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
     
-    const exportFileDefaultName = `skycrew_schedule_${loginId}_${format(new Date(), 'yyyyMMdd')}.json`;
+    const exportFileDefaultName = `skycrew_schedule_${loginId}_${safeFormat(new Date(), 'yyyyMMdd')}.json`;
     
     const linkElement = document.createElement('a');
     linkElement.setAttribute('href', dataUri);
@@ -659,11 +659,11 @@ export default function App() {
         const data = await res.json();
         throw new Error(data.error || "Failed to post swap");
       }
-      alert("Swap request posted to the board!");
+      setAlertMessage("Swap request posted to the board!");
       fetchSwaps();
     } catch (err: any) {
       console.error("Failed to post swap", err);
-      alert(err.message);
+      setAlertMessage(err.message);
     }
   };
 
@@ -671,11 +671,11 @@ export default function App() {
     try {
       const res = await fetch(`/api/swaps/${swapId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error("Failed to cancel swap");
-      alert("Swap request cancelled.");
+      setAlertMessage("Swap request cancelled.");
       fetchSwaps();
     } catch (err: any) {
       console.error("Failed to cancel swap", err);
-      alert(err.message);
+      setAlertMessage(err.message);
     }
   };
 
@@ -692,7 +692,7 @@ export default function App() {
           proposer_flight_id_return: offeredReturnId
         })
       });
-      alert("Proposal sent!");
+      setAlertMessage("Proposal sent!");
       setIsProposingSwap(false);
       setSelectedListing(null);
       setOfferedFlightId(null);
@@ -1106,7 +1106,7 @@ export default function App() {
               {/* Calendar Controls */}
               <div className="flex items-center justify-between bg-white p-4 rounded-2xl shadow-sm border border-black/5">
                 <div className="flex items-center gap-4">
-                  <h2 className="text-2xl font-light">{format(currentDate, 'MMMM yyyy')}</h2>
+                  <h2 className="text-2xl font-light">{safeFormat(currentDate, 'MMMM yyyy')}</h2>
                   <div className="flex items-center gap-1">
                     <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-2 hover:bg-gray-100 rounded-lg"><ChevronLeft size={20}/></button>
                     <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-2 hover:bg-gray-100 rounded-lg"><ChevronRight size={20}/></button>
@@ -1184,7 +1184,7 @@ export default function App() {
                 </div>
                 <div className="grid grid-cols-7">
                   {calendarDays.map((day, i) => {
-                    const dateStr = format(day, 'yyyy-MM-dd');
+                    const dateStr = safeFormat(day, 'yyyy-MM-dd');
                     const dayFlights = flightsByDate[dateStr] || [];
                     const isCurrentMonth = isSameMonth(day, monthStart);
                     const isAL = annualLeaves.includes(dateStr);
@@ -1208,7 +1208,7 @@ export default function App() {
                             !isCurrentMonth ? "text-gray-300" : "text-gray-500",
                             isSameDay(day, new Date()) && "bg-emerald-600 text-white w-6 h-6 flex items-center justify-center rounded-full"
                           )}>
-                            {format(day, 'd')}
+                            {safeFormat(day, 'd')}
                           </span>
                           {dayFlights.length === 0 && isCurrentMonth && (
                             <button 
@@ -1978,19 +1978,25 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Flight Code</label>
-                      <input 
-                        type="text" 
-                        value={flightCode}
-                        onChange={(e) => setFlightCode(e.target.value)}
-                        placeholder="e.g. CI100"
-                        className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                      />
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold pointer-events-none">CI</span>
+                        <input 
+                          type="text" 
+                          value={flightCode.startsWith('CI') ? flightCode.slice(2) : flightCode}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/\D/g, '');
+                            setFlightCode(val ? 'CI' + val : '');
+                          }}
+                          placeholder="100"
+                          className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                        />
+                      </div>
                     </div>
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Departure Date</label>
                       <input 
                         type="date" 
-                        value={selectedDate ? format(selectedDate, 'yyyy-MM-dd') : ''}
+                        value={safeFormat(selectedDate, 'yyyy-MM-dd')}
                         onChange={(e) => setSelectedDate(e.target.value ? safeParseISO(e.target.value) : null)}
                         className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
                       />
@@ -2021,20 +2027,26 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Flight Code</label>
-                      <input 
-                        type="text" 
-                        value={returnFlightCode}
-                        onChange={(e) => setReturnFlightCode(e.target.value)}
-                        placeholder="e.g. CI101"
-                        className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
-                      />
+                      <div className="relative">
+                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold pointer-events-none">CI</span>
+                        <input 
+                          type="text" 
+                          value={returnFlightCode.startsWith('CI') ? returnFlightCode.slice(2) : returnFlightCode}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/\D/g, '');
+                            setReturnFlightCode(val ? 'CI' + val : '');
+                          }}
+                          placeholder="101"
+                          className="w-full pl-10 pr-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+                        />
+                      </div>
                     </div>
                     {!isSameDayReturn && (
                       <div>
                         <label className="block text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Return Date</label>
                         <input 
                           type="date" 
-                          value={returnDate ? format(returnDate, 'yyyy-MM-dd') : ''}
+                          value={safeFormat(returnDate, 'yyyy-MM-dd')}
                           onChange={(e) => setReturnDate(e.target.value ? safeParseISO(e.target.value) : null)}
                           className="w-full px-4 py-3 bg-gray-50 border border-black/5 rounded-2xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
                         />
