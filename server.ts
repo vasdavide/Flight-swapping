@@ -116,6 +116,7 @@ async function startServer() {
   app.get("/api/config", (req, res) => {
     res.json({
       hasGeminiKey: !!process.env.GEMINI_API_KEY,
+      geminiApiKey: process.env.GEMINI_API_KEY, // Provide to client at runtime
       env: process.env.NODE_ENV
     });
   });

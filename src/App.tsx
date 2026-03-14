@@ -36,7 +36,7 @@ import {
   eachDayOfInterval,
   parseISO
 } from 'date-fns';
-import { parseFlight, scanSchedule, editImage } from './services/geminiService';
+import { parseFlight, scanSchedule, editImage, setRuntimeApiKey } from './services/geminiService';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -347,6 +347,9 @@ export default function App() {
         const res = await fetch('/api/config');
         const data = await res.json();
         setServerHasKey(data.hasGeminiKey);
+        if (data.geminiApiKey) {
+          setRuntimeApiKey(data.geminiApiKey);
+        }
       } catch (err) {
         console.error("Failed to check server config", err);
       }
@@ -354,7 +357,7 @@ export default function App() {
     checkConfig();
   }, []);
 
-  const hasApiKey = !!(process.env.GEMINI_API_KEY || (typeof window !== 'undefined' && (window as any).GEMINI_API_KEY));
+  const hasApiKey = !!(process.env.GEMINI_API_KEY || serverHasKey);
 
   const handleToggleAL = async (date: string) => {
     if (!loginId) return;
@@ -1848,17 +1851,12 @@ export default function App() {
                     <span className="text-gray-600">AI Engine (Gemini 3.1 Pro)</span>
                     <span className={cn(
                       "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase",
-                      hasApiKey ? "bg-emerald-100 text-emerald-700" : (serverHasKey ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700")
+                      hasApiKey ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
                     )}>
-                      {hasApiKey ? "Ready" : (serverHasKey ? "Syncing..." : "Missing API Key")}
+                      {hasApiKey ? "Ready" : "Missing API Key"}
                     </span>
                   </div>
-                  {!hasApiKey && serverHasKey && (
-                    <p className="text-[10px] text-amber-600 italic">
-                      The server has the key, but the client is out of sync. Please <strong>re-share</strong> the app to update the live version.
-                    </p>
-                  )}
-                  {!hasApiKey && !serverHasKey && serverHasKey !== null && (
+                  {!hasApiKey && serverHasKey === false && (
                     <p className="text-[10px] text-red-500 italic">
                       Please configure your <strong>GEMINI_API_KEY</strong> in the AI Studio Secrets panel and then <strong>re-share</strong> the app.
                     </p>
