@@ -285,13 +285,15 @@ async function startServer() {
         SELECT al.*, 
                (SELECT COUNT(*) FROM flights f WHERE f.user_email = al.user_email AND f.date = al.date) as has_flight
         FROM annual_leaves al
-        WHERE al.date >= date('now', '-1 day')
+        WHERE al.date >= date('now', '-2 days')
         ORDER BY al.user_email, al.date ASC
       `).all() as any[];
 
       console.log(`[GET /api/available-crew] Found ${crew.length} raw leave entries.`);
-      const filtered = crew.filter(c => c.has_flight === 0);
-      console.log(`[GET /api/available-crew] Found ${filtered.length} crew without flights.`);
+      // We show all annual leave entries as "available" for swaps, 
+      // even if they have a flight (they might want to swap it).
+      const filtered = crew; 
+      console.log(`[GET /api/available-crew] Processing ${filtered.length} crew entries.`);
       
       const grouped: any[] = [];
       if (filtered.length === 0) {

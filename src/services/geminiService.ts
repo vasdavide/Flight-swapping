@@ -17,9 +17,16 @@ export async function parseFlight(flightCode: string, dateString: string) {
     console.log(`[parseFlight] Attempting with Google Search using gemini-3.1-pro-preview...`);
     let response = await ai.models.generateContent({
       model: "gemini-3.1-pro-preview",
-      contents: `Use Google Search to find the current route and schedule for flight code "${flightCode}" on ${dateString}. 
-      I need the departure city, arrival city, departure time (local), arrival time (local), aircraft type, and any layover information if applicable.
-      Search for the actual route (e.g. if CI104, search "CI104 flight route").
+      contents: `Search for the flight details of "${flightCode}" on ${dateString}. 
+      Prioritize official airline websites like China Airlines (china-airlines.com), EVA Air, or flight tracking sites like FlightAware and FlightRadar24.
+      I need:
+      1. Departure City
+      2. Arrival City
+      3. Departure Time (Local HH:mm)
+      4. Arrival Time (Local HH:mm)
+      5. Aircraft Type
+      6. Layover (if any)
+      
       Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time, aircraft, layover.`,
       config: {
         tools: [{ googleSearch: {} }],
@@ -29,32 +36,35 @@ export async function parseFlight(flightCode: string, dateString: string) {
           properties: {
             departure_city: { type: Type.STRING },
             arrival_city: { type: Type.STRING },
-            departure_time: { type: Type.STRING, description: "HH:mm" },
-            arrival_time: { type: Type.STRING, description: "HH:mm" },
+            departure_time: { type: Type.STRING },
+            arrival_time: { type: Type.STRING },
             aircraft: { type: Type.STRING },
             layover: { type: Type.STRING },
           },
+          required: ["departure_city", "arrival_city", "departure_time", "arrival_time"]
         }
       }
     });
 
     console.log(`[parseFlight] Google Search response received:`, response.text);
-    return JSON.parse(response.text || '{}');
-  } catch (searchErr: any) {
-    console.warn("[parseFlight] Search grounding failed:", searchErr);
-    
-    // Check for specific error messages that might indicate API key issues
-    if (searchErr.message?.includes("API_KEY_INVALID") || searchErr.message?.includes("not found")) {
-      console.error("[parseFlight] Critical API Key error detected.");
+    try {
+      const parsed = JSON.parse(response.text || '{}');
+      if (parsed.departure_city && parsed.arrival_city) return parsed;
+      throw new Error("Incomplete data from search");
+    } catch (e) {
+      console.warn("[parseFlight] Failed to parse search response, trying fallback", e);
+      throw e; // Trigger catch block for Attempt 2
     }
-
-    // Attempt 2: Fallback
+  } catch (searchErr: any) {
+    console.warn("[parseFlight] Search grounding failed or returned invalid data:", searchErr);
+    
+    // Attempt 2: Fallback without tools
     console.log(`[parseFlight] Attempting fallback without tools...`);
     try {
       let response = await ai.models.generateContent({
         model: "gemini-3.1-pro-preview",
-        contents: `Parse this flight code "${flightCode}" for the date ${dateString}. 
-        Provide the likely flight details (departure city, arrival city, departure time, arrival_time).
+        contents: `Provide the typical flight schedule for flight code "${flightCode}". 
+        The date is ${dateString}. If you don't know the exact time, provide the most common schedule for this flight number.
         Return ONLY a JSON object with these keys: departure_city, arrival_city, departure_time, arrival_time.`,
         config: {
           responseMimeType: "application/json",
@@ -63,9 +73,10 @@ export async function parseFlight(flightCode: string, dateString: string) {
             properties: {
               departure_city: { type: Type.STRING },
               arrival_city: { type: Type.STRING },
-              departure_time: { type: Type.STRING, description: "HH:mm" },
-              arrival_time: { type: Type.STRING, description: "HH:mm" },
+              departure_time: { type: Type.STRING },
+              arrival_time: { type: Type.STRING },
             },
+            required: ["departure_city", "arrival_city"]
           }
         }
       });
@@ -73,7 +84,7 @@ export async function parseFlight(flightCode: string, dateString: string) {
       return JSON.parse(response.text || '{}');
     } catch (fallbackErr) {
       console.error("[parseFlight] Fallback also failed:", fallbackErr);
-      throw fallbackErr;
+      return { departure_city: 'Unknown', arrival_city: 'Unknown', departure_time: '00:00', arrival_time: '00:00' };
     }
   }
 }
@@ -86,7 +97,7 @@ export async function scanSchedule(base64Data: string, mimeType: string) {
       model: "gemini-3.1-pro-preview",
       contents: [
         { inlineData: { data: base64Data, mimeType } },
-        { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its departure city, arrival city, departure_time, arrival_time, aircraft type, and layover info. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time, aircraft, layover." }
+        { text: "Extract all schedule entries from this image. For each flight code found, use your Google Search tool to find its route details (departure city, arrival city, times, aircraft). Search official airline sites like China Airlines if relevant. Return ONLY a JSON array of objects with: flight_code, departure_city, arrival_city, departure_time, arrival_time, aircraft, layover." }
       ],
       config: {
         tools: [{ googleSearch: {} }],
