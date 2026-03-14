@@ -394,6 +394,12 @@ export default function App() {
   const handleAddFlight = async () => {
     if (!flightCode || !selectedDate) return;
     
+    // Ensure there's a number in the flight code
+    if (!/\d/.test(flightCode)) {
+      setAlertMessage("Please enter a valid flight number (e.g. 100).");
+      return;
+    }
+    
     const depDateStr = safeFormat(selectedDate, 'yyyy-MM-dd');
     const retDateStr = isSameDayReturn ? depDateStr : (returnDate ? safeFormat(returnDate, 'yyyy-MM-dd') : depDateStr);
     
@@ -619,10 +625,15 @@ export default function App() {
   };
 
   const handlePostSwap = async (flightId: number) => {
+    if (!loginId) {
+      setAlertMessage("You must be logged in to post a swap.");
+      return;
+    }
+    console.log("Attempting to post swap for flightId:", flightId);
     try {
       const mainFlight = flights.find(f => f.id === flightId);
       if (!mainFlight) {
-        throw new Error("Flight not found");
+        throw new Error("Flight not found in your schedule.");
       }
 
       const isListed = swaps.some(s => 
@@ -630,7 +641,7 @@ export default function App() {
         (mainFlight.group_id && s.group_id === mainFlight.group_id)
       );
       if (isListed) {
-        throw new Error("Flight already listed");
+        throw new Error("This flight is already listed on the swap board.");
       }
 
       let returnId = null;
@@ -650,20 +661,27 @@ export default function App() {
         payload.return_flight_id = returnId;
       }
 
+      console.log("Posting swap with payload:", payload);
       const res = await fetch('/api/swaps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || "Failed to post swap");
+        throw new Error(data.error || "Failed to post swap request.");
       }
+      
       setAlertMessage("Swap request posted to the board!");
       fetchSwaps();
     } catch (err: any) {
-      console.error("Failed to post swap", err);
-      setAlertMessage(err.message);
+      console.error("Detailed error in handlePostSwap:", err);
+      // If it's a DOMException or similar, provide a cleaner message
+      const errorMessage = err.name === 'DataError' || err.message.includes('pattern') 
+        ? "There was a technical issue with the request format. Please try again or refresh the page."
+        : err.message;
+      setAlertMessage(errorMessage);
     }
   };
 
@@ -2183,10 +2201,8 @@ export default function App() {
                     })()}
                     <button 
                       onClick={() => {
-                        if (confirm("Are you sure you want to delete this flight?")) {
-                          handleDeleteFlight(selectedFlightForDetails.id!);
-                          setSelectedFlightForDetails(null);
-                        }
+                        setFlightToDelete(selectedFlightForDetails.id!);
+                        setSelectedFlightForDetails(null);
                       }}
                       className="p-4 bg-red-50 text-red-600 rounded-2xl hover:bg-red-100 transition-all active:scale-[0.98]"
                     >
